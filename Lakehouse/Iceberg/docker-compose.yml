@@ -1,0 +1,55 @@
+services:
+  # 1. Nessie (Iceberg Catalog)
+  nessie:
+    image: ghcr.io/projectnessie/nessie:latest
+    container_name: nessie
+    ports:
+      - 19120:19120 # Nessie API Port
+    networks:
+      - nessie_net
+    environment:
+      - NESSIE_VERSION_STORE_TYPE=ROCKSDB
+      - NESSIE_VERSION_STORE_PERSIST_ROCKS_DATABASE_PATH=/data/nessie_rocksdb
+    volumes:
+      - ./nessie_data:/data
+
+  # 2. MinIO (S3-compatible Object Storage)
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    ports:
+      - 9000:9000 # API Port
+      - 9001:9001 # Console Port
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    networks:
+      - nessie_net
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - ./minio_data:/data
+
+  # 3. Spark (PySpark Environment with Iceberg)
+  # Uses an image pre-loaded with Spark, Iceberg, Nessie, and S3 JARs
+  spark-iceberg:
+    image: tabulario/spark-iceberg:3.5.5_1.8.1
+    container_name: spark-iceberg
+    networks:
+      - nessie_net
+    environment:
+      # Credentials for Nessie/MinIO access
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=us-east-1
+    ports:
+      - "4040-4045:4040-4045" # Spark Web UI
+    tty: true # Required for interactive shell
+    volumes:
+      # Mount extension JARs and scripts
+      - ./jars/nessie-spark-extensions-3.5_2.12-0.106.0.jar:/opt/spark/jars/nessie-spark-extensions-3.5_2.12-0.106.0.jar
+      - ./python-scripts/spark-iceberg-nessie_test.py:/opt/spark/python-scripts/spark-iceberg-nessie_test.py
+    # Keep container running without starting Thrift server
+    entrypoint: /bin/sh -c "tail -f /dev/null"
+
+networks:
+  nessie_net:
