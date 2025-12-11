@@ -1,9 +1,11 @@
-## uwb_to_db.py
-- UWB Data를 DB에 저장 (상시)
-  
-## uwb_tracking.py
-- UWB RTLS를 Twin과 실시간 연동
+### uwb_to_db.py
+Saves UWB Data to DB (continuous operation)
 
-### 과정
-1. UWB Data를 DB와 Kafka에 각각 전송
-2. Twin에서 Kafka로부터 UWB Data를 읽어와 projection
+---
+
+### uwb_tracking.py
+Real-time integration of UWB RTLS with Twin
+
+- Process
+1. Send UWB Data to both DB and Kafka
+2. Twin reads UWB Data from Kafka and performs projection
