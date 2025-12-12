@@ -1,5 +1,6 @@
 # FPS Measurement Extension
-https://github.com/user-attachments/assets/89cb2fae-4260-4136-8e0e-36da148f9786
+
+![isaacsim framerate measurement](https://github.com/user-attachments/assets/e0a5a34d-3aef-465c-a152-66c5f29c4005)
 
 This extension records the camera movement path of the Perspective view controlled by the user and allows for playback. It also measures the FPS (Frames Per Second) while replaying the recorded path.
 
