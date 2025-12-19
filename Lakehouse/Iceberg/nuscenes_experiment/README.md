@@ -4,27 +4,75 @@
 
 This project investigates the design and performance of a **Data Lakehouse** using **Apache Iceberg**, focusing on the migration from a legacy file-based data lake to a structured Lakehouse architecture.
 
-The experiments utilize the **[nuScenes](https://www.nuscenes.org/nuscenes)** autonomous driving dataset to compare performance across three stages: Baseline (Legacy), Iceberg-Silver, and Iceberg-Gold.
+The experiments utilize the **[nuScenes v1.0-mini](https://www.nuscenes.org/nuscenes)** autonomous driving dataset to compare performance across three stages: Baseline (Legacy), Iceberg-Silver, and Iceberg-Gold.
 
 ---
 
-## 📂 Dataset: [nuScenes](https://www.nuscenes.org/nuscenes) (Partial)
+## 📂 Dataset: [nuScenes v1.0-mini](https://www.nuscenes.org/nuscenes) (Partial)
 
-We utilized a subset of the **[nuScenes](https://www.nuscenes.org/nuscenes)** dataset, specifically focusing on sensor data and object annotations.
+We utilized a subset of the **[nuScenes v1.0-mini](https://www.nuscenes.org/nuscenes)** dataset. The raw data consists of directory-based sensor files (images, pcd) and metadata stored in JSON format.
 
-### Data Schema
-The main data table includes sensor paths, object coordinates, dimensions, and categories.
+---
 
+### Source Data Schema (Raw JSON Metadata)
+
+Before migration, the dataset is organized in a relational structure using multiple JSON files. To access specific sensor data, the system must parse and join these files based on token keys.
+
+* **`sample.json`**: Represents a snapshot in time (a scene frame).
+* **`sample_data.json`**: Contains metadata for the actual sensor data (images, radar, lidar) linked to a sample.
+
+Below is an actual example of the raw JSON structure used in the Baseline:
+
+```json
+/* 1. sample.json - Defines a specific timestamp/frame */
+{
+  "token": "ca9a282c9e77460f8360f564131a8af5",       // Primary Key (Unique Frame ID)
+  "timestamp": 1532402927647951,
+  "prev": "",
+  "next": "39586f9d59004284a7114a68825e8eec",        // Token for the next frame
+  "scene_token": "cc8c0bf57f984915a77078b10eb33198"
+}
+
+/* 2. sample_data.json - Links sensor data to a sample */
+{
+  "token": "5ace90b379af485b9dcb1584b01e7212",
+  "sample_token": "39586f9d59004284a7114a68825e8eec", // Foreign Key (Links to sample.json)
+  "ego_pose_token": "5ace90b379af485b9dcb1584b01e7212",
+  "calibrated_sensor_token": "f4d2a6c281f34a7eb8bb033d82321f79",
+  "timestamp": 1532402927814384,
+  "fileformat": "pcd",
+  "filename": "sweeps/RADAR_FRONT/n015...1532402927814384.pcd", // Actual binary file path
+  "is_key_frame": false,
+  "height": 0,
+  "width": 0
+}
+
+```
+
+> **Performance Bottleneck:** In the Baseline approach, retrieving data for a specific time range or channel requires iterative scanning and joining of these JSON files, which causes significant I/O overhead compared to the Iceberg table format.
+### Migrated Schema & Target Workload (Iceberg Table)
+The raw JSON data is parsed and transformed into the following structured schema. While the schema supports full multi-sensor data, our experiments focused on a specific subset to evaluate query performance.
+
+#### 1. Table Schema
 | Column Name | Data Type | Description |
 | :--- | :--- | :--- |
-| `img_path` | `string` | File path for camera/sensor images |
+| `img_path` | `string` | File path derived from `filename` |
 | `translation` | `array<double>` | Object location (x, y, z) |
 | `size` | `array<double>` | Object dimensions (w, l, h) |
 | `rotation` | `array<double>` | Orientation (Quaternion) |
-| `category_name` | `string` | Object classification (e.g., `movable_object.trafficcone`) |
+| `category_name` | `string` | Object classification |
 | **`channel`** | **`string`** | **Sensor Channel (Partition Key)** |
 
-> **Note on Partitioning:** > The table is partitioned by the **`channel`** column (e.g., `RADAR_FRONT_RIGHT`, `LIDAR_TOP`). This explains why `channel` appears in both the column list and partition information in the Hive/Spark schema. Partitioning allows the engine to skip unrelated files during queries, significantly reducing I/O.
+> **Note on Partitioning:** The table is partitioned by the **`channel`** column. This structure allows the engine to significantly reduce I/O by skipping unrelated sensor partitions during queries.
+
+#### 2. Experimental Target Data
+To accurately measure the performance gap between the Baseline and the Data Lakehouse, we targeted a specific subset of data that requires both **partition pruning** and **column filtering**:
+
+* **Target Channel:** `CAM_FRONT` (Partition Pruning)
+* **Target Category:** `human.pedestrian.adult` (Data Filtering)
+
+**Why this choice?**
+This workload simulates a real-world autonomous driving scenario (e.g., "Find all pedestrians detected by the front camera") and highlights the efficiency of Iceberg's metadata handling compared to the full-scan approach of the Baseline.
 
 ---
 
@@ -33,19 +81,16 @@ The main data table includes sensor paths, object coordinates, dimensions, and c
 The research compares three distinct architectural approaches:
 
 ### 1. Baseline (File-based Data Lake)
-* **Structure:** Legacy Parquet files managed by Hive Metastore.
-* **Method:** Standard file listing and reading.
-* **Characteristics:** Susceptible to the "small files problem" and slower metadata resolution at scale.
+* **Structure:** Raw directory structure containing sensor files and JSON metadata files.
+* **Method:** Iterative file listing and parsing of multiple JSON files to link data relationships.
 
 ### 2. Iceberg-Silver (Join-on-read)
 * **Structure:** Data migrated to Apache Iceberg format.
 * **Method:** **Join-on-read**. Data is normalized; queries require joining multiple tables at runtime.
-* **Characteristics:** Provides ACID transactions and time travel, but join operations incur computational overhead.
 
 ### 3. Iceberg-Gold (Single-table / Pre-aggregated)
 * **Structure:** Optimized Iceberg table.
 * **Method:** **Single-table** (Denormalized). Data is pre-joined and optimized using techniques like Z-Ordering or Compaction.
-* **Characteristics:** Minimizes shuffle and seek operations, designed for high-performance analytics.
 
 ---
 
