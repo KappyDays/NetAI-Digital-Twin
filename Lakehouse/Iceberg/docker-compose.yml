@@ -49,6 +49,7 @@ services:
       - ./jars/nessie-spark-extensions-3.5_2.12-0.106.0.jar:/opt/spark/jars/nessie-spark-extensions-3.5_2.12-0.106.0.jar
       - ./python-scripts/spark-iceberg-nessie_test.py:/opt/spark/python-scripts/spark-iceberg-nessie_test.py
       - ${USER_DATA_PATH}:${USER_DATA_PATH}
+      - nuscenes_experiment:/opt/spark # For Iceberg Experiment
     # Keep container running without starting Thrift server
     entrypoint: /bin/sh -c "tail -f /dev/null"
 
