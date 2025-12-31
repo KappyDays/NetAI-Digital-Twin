@@ -126,7 +126,7 @@ We measured query execution time across different data scales to evaluate scalab
 
 ### Result Table
 
-| Data Scale Multiple () | Pure Python (Nested Loop) | Spark Iceberg (Standard Join) | Spark Iceberg (Optimized Layout) |
+| Data Scale Factor | Pure Python (Nested Loop) | Spark Iceberg (Normalized) | Spark Iceberg (Denormalized) |
 | --- | --- | --- | --- |
 | **1** | 0.0273s | 0.1613s | 0.0527s |
 | **9** | 0.2350s | 0.2279s | 0.0551s |
