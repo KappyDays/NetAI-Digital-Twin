@@ -1,6 +1,7 @@
 # Query Performance & Scalability Analysis: Apache Iceberg Lakehouse
 
-<Figure size 1200x700 with 1 Axes><img width="1184" height="684" alt="image" src="https://github.com/user-attachments/assets/790de880-8ef6-489a-99af-2b7e762e4ae6" />
+<Figure size 3600x2100 with 1 Axes><img width="3552" height="2052" alt="image" src="https://github.com/user-attachments/assets/067cc607-cc50-4e69-8a4b-ffa004b839d1" />
+
 
 This project investigates the impact of **data modeling strategies** on query performance and **scalability** within an **Apache Iceberg Data Lakehouse**.
 
