@@ -16,6 +16,9 @@ UWB/
 TwinX/
 Datacenter/
 Lakehouse/DeltaLake/
+Omniverse/omniverse-extensions/Vehicle-Scenarios/
+Omniverse/omniverse-extensions/isaacsim.framerate.measurement/
+Omniverse/omniverse-extensions/real.time.uwb.exts/
 
 # Presentation / reference (not needed on server)
 slides/
