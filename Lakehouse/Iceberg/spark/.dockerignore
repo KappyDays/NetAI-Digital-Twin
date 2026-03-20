@@ -1,0 +1,8 @@
+# Spark Iceberg build context — exclude non-essential files
+.git
+*.md
+.env
+.env.*
+__pycache__
+*.pyc
+.pytest_cache

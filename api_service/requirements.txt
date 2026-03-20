@@ -1,0 +1,22 @@
+# -- Core Framework --
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+
+# -- Static file serving (required by FastAPI StaticFiles / Starlette) --
+aiofiles==24.1.0
+
+# -- Data Lakehouse --
+pyiceberg[s3]==0.8.1
+pyarrow==18.1.0
+trino==0.333.0
+
+# -- S3 / MinIO --
+boto3==1.35.81
+
+# -- HTTP client (Polaris REST catalog calls) --
+httpx==0.28.1
+
+# -- Settings & Validation --
+pydantic==2.10.3
+pydantic-settings==2.7.0

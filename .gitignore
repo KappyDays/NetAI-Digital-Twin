@@ -2,6 +2,24 @@
 my_config*.json
 *.my_env*
 test.py
+extra
+
+# AI/Dev tools (not needed on server)
+.omc/
+CLAUDE.md
+CLAUDE.md.bak
+.playwright-mcp/
+
+# Presentation / reference (not needed on server)
+slides/
+references/
+
+# MinIO data (runtime, not source)
+minio_data/
+
+# Node.js
+node_modules/
+
 # my
 .gitsecret/keys/*
 !.gitsecret/keys/*.kbx*

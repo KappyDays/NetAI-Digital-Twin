@@ -1,39 +1,114 @@
 #!/bin/bash
+# =============================================================================
+# Iceberg Lakehouse Stack — Start Script
+# =============================================================================
+# Initializes directories, validates .env, and starts all services.
+#
+# Usage:
+#   ./start.sh           # Start with build
+#   ./start.sh --verify  # Start + run health verification
+# =============================================================================
+set -euo pipefail
 
-mkdir -p ./nessie_data
-mkdir -p ./minio_data
-mkdir -p ./jars
-mkdir -p ./python-scripts
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-chmod -R 777 ./nessie_data
-chmod -R 777 ./minio_data
-chmod -R 777 ./jars
-chmod -R 777 ./python-scripts
-
-# Download JAR file (Prevents Docker from creating an empty directory which causes errors)
-JAR_URL="https://repo1.maven.org/maven2/org/projectnessie/nessie-integrations/nessie-spark-extensions-3.5_2.12/0.106.0/nessie-spark-extensions-3.5_2.12-0.106.0.jar"
-JAR_FILE="./jars/nessie-spark-extensions-3.5_2.12-0.106.0.jar"
-
-if [ -f "$JAR_FILE" ]; then
-    echo -e "${GREEN} -> JAR file already exists. Skipping download.${NC}"
-else
-    echo -e " -> Starting JAR file download..."
-    # Use wget if available, otherwise use curl
-    if command -v wget &> /dev/null; then
-        wget -q --show-progress -O "$JAR_FILE" "$JAR_URL"
-    elif command -v curl &> /dev/null; then
-        curl -L -o "$JAR_FILE" "$JAR_URL"
-    else
-        echo -e "${RED}Error: Neither wget nor curl found. Please download the JAR file manually.${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN} -> JAR file download complete${NC}"
+# ── Verify .env exists ──────────────────────────────────────────────────────
+if [ ! -f ".env" ]; then
+    echo "ERROR: .env file not found!"
+    echo ""
+    echo "Create one from the template:"
+    echo "  cp example.env .env"
+    echo "  # Edit .env with your credentials"
+    echo ""
+    exit 1
 fi
 
-docker compose up -d
+# ── Validate critical env vars ──────────────────────────────────────────────
+set -a
+source .env
+set +a
 
-echo -e " - Nessie  : http://localhost:19120"
-echo -e " - MinIO   : http://localhost:9001 [Example] (ID: AAAAA / PW: BBBBBBBB)"
-echo -e " - Spark UI: http://localhost:4040 (Activated when the job runs)"
+REQUIRED_VARS=(
+    "MINIO_ROOT_USER"
+    "MINIO_ROOT_PASSWORD"
+    "AWS_ACCESS_KEY_ID"
+    "AWS_SECRET_ACCESS_KEY"
+    "POLARIS_ROOT_CLIENT_ID"
+    "POLARIS_ROOT_CLIENT_SECRET"
+    "USER_DATA_PATH"
+    "ICEBERG_WAREHOUSE"
+    "S3_BUCKET"
+)
+
+MISSING=0
+for var in "${REQUIRED_VARS[@]}"; do
+    if [ -z "${!var:-}" ]; then
+        echo "ERROR: Required variable '${var}' is not set in .env"
+        MISSING=1
+    fi
+done
+
+if [ "$MISSING" -eq 1 ]; then
+    echo ""
+    echo "Please set all required variables in .env (see example.env)"
+    exit 1
+fi
+
+# Credential consistency check
+if [ "$MINIO_ROOT_USER" != "$AWS_ACCESS_KEY_ID" ] || \
+   [ "$MINIO_ROOT_PASSWORD" != "$AWS_SECRET_ACCESS_KEY" ]; then
+    echo "WARNING: MINIO_ROOT_USER/PASSWORD do not match AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY"
+    echo "  This will cause Trino/Polaris to fail connecting to MinIO."
+    echo "  MINIO_ROOT_USER=$MINIO_ROOT_USER vs AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID"
+    echo ""
+    read -p "Continue anyway? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
+
+# ── Create required directories ─────────────────────────────────────────────
+echo "[start] Creating required directories..."
+mkdir -p ./minio_data
+mkdir -p ./trino/catalog
+
+# Ensure Trino data path exists (on host for volume mount)
+if [ ! -d "$USER_DATA_PATH" ]; then
+    echo "[start] Creating Trino data path: ${USER_DATA_PATH}"
+    mkdir -p "$USER_DATA_PATH" 2>/dev/null || \
+        echo "[start] WARNING: Cannot create ${USER_DATA_PATH} — ensure it exists"
+fi
+
+# Ensure scripts are executable
+chmod +x ./scripts/*.sh 2>/dev/null || true
+
+# ── Start stack ─────────────────────────────────────────────────────────────
+echo "[start] Starting Iceberg Lakehouse stack..."
+echo ""
+docker compose up -d --build
+
+echo ""
+echo "============================================================"
+echo "  Iceberg Lakehouse Stack — Starting"
+echo "============================================================"
+echo ""
+echo "  Services:"
+echo "    MinIO Console   : http://localhost:9001"
+echo "    Polaris Catalog : http://localhost:8181"
+echo "    Trino UI        : http://localhost:8900"
+echo "    Lakehouse API   : http://localhost:8100"
+echo "    API Docs        : http://localhost:8100/docs"
+echo ""
 
 docker compose ps
+
+# ── Optional: Run verification ──────────────────────────────────────────────
+if [ "${1:-}" = "--verify" ]; then
+    echo ""
+    echo "[start] Waiting 30s for services to stabilize..."
+    sleep 30
+    echo ""
+    ./scripts/verify-stack.sh
+fi

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lakehouse Digital-Twin Dashboard</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+          rel="stylesheet">
+
+    <!-- Plotly.js (CDN) — for heatmap + time-series charts -->
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+
+    <!-- Dashboard Styles -->
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+
+    <!-- Favicon (data URI — no external file needed) -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%234c8bf5'/><text x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='18'>L</text></svg>">
+</head>
+<body>
+    <div class="app-shell">
+        <!-- ==================== Navbar ==================== -->
+        <nav class="navbar">
+            <a href="#/overview" class="navbar__brand">
+                <span class="navbar__brand-icon">L</span>
+                Lakehouse Dashboard
+            </a>
+
+            <ul class="navbar__nav">
+                <li><a href="#/overview" class="navbar__link navbar__link--active" data-route="overview">
+                    Overview
+                </a></li>
+                <li><a href="#/spaces" class="navbar__link" data-route="spaces">
+                    Spaces
+                </a></li>
+                <li><a href="#/query" class="navbar__link" data-route="query">
+                    SQL Query
+                </a></li>
+                <li><a href="/docs" class="navbar__link" target="_blank">
+                    API Docs
+                </a></li>
+            </ul>
+
+            <div class="navbar__status">
+                <span class="status-dot" id="health-dot"></span>
+                <span class="status-label" id="health-label">checking...</span>
+            </div>
+        </nav>
+
+        <!-- ==================== Main Content ==================== -->
+        <main class="main-content">
+            <div id="page-content">
+                <!-- Page content is injected here by the router -->
+                <div style="display:flex;align-items:center;justify-content:center;height:60vh;">
+                    <div class="skeleton skeleton--chart" style="width:300px;height:200px;"></div>
+                </div>
+            </div>
+        </main>
+
+        <!-- ==================== Footer ==================== -->
+        <footer class="footer">
+            Lakehouse Digital-Twin &middot; Iceberg + Trino + MinIO + FastAPI &middot;
+            Omniverse Isaac Sim Integration &middot;
+            <span id="footer-version">v1.0.0</span>
+        </footer>
+    </div>
+
+    <!-- ==================== Toast Container ==================== -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <!-- ==================== Scripts ==================== -->
+    <!-- Core Data Fetching Layer -->
+    <script src="/static/js/api-client.js"></script>
+    <script src="/static/js/data-polling-service.js"></script>
+    <script src="/static/js/dashboard-store.js"></script>
+
+    <!-- Visualization Components -->
+    <script src="/static/js/heatmap-component.js"></script>
+    <script src="/static/js/chart-component.js"></script>
+
+    <!-- Legacy Compat: config, api, components, router -->
+    <script src="/static/js/config.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/components.js"></script>
+    <script src="/static/js/router.js"></script>
+
+    <!-- Pages -->
+    <script src="/static/js/pages/overview.js"></script>
+    <script src="/static/js/pages/spaces.js"></script>
+    <script src="/static/js/pages/query.js"></script>
+
+    <!-- App Initialization -->
+    <script>
+        (function () {
+            'use strict';
+
+            /* ---- Data Fetching Layer (new) ---- */
+            let apiClient, pollingService, dashboardStore;
+
+            function initDataLayer() {
+                // 1. API Client (same-origin)
+                apiClient = new LakehouseAPIClient('', 15000);
+
+                // 2. Polling Service with pre-configured channels
+                pollingService = createDashboardPollingService(apiClient, {
+                    congestion: 5000,
+                    'congestion-ts': 15000,
+                    'dynamic-latest': 5000,
+                    'dynamic-objects': 30000,
+                    'static-spaces': 30000,
+                    'static-count': 30000,
+                    'static-types': 60000,
+                    health: 10000,
+                });
+
+                // 3. Reactive Store
+                dashboardStore = new DashboardStore(pollingService);
+
+                // Expose globally for page scripts and debugging
+                window.__dataLayer = { apiClient, pollingService, dashboardStore };
+                window.DashboardAPI = apiClient;
+                window.DashboardPolling = pollingService;
+                window.DashboardState = dashboardStore;
+
+                console.info('[Dashboard] Data fetching layer initialized');
+            }
+
+            /* ---- Register Routes (legacy) ---- */
+            if (typeof Router !== 'undefined') {
+                if (typeof OverviewPage !== 'undefined') Router.register('overview', OverviewPage);
+                if (typeof SpacesPage !== 'undefined') Router.register('spaces', SpacesPage);
+                if (typeof QueryPage !== 'undefined') Router.register('query', QueryPage);
+            }
+
+            /* ---- Health Status (driven by polling service) ---- */
+            function bindHealthStatus() {
+                const dot = document.getElementById('health-dot');
+                const label = document.getElementById('health-label');
+
+                dashboardStore.watch('health', (data) => {
+                    if (!dot || !label) return;
+                    if (data.status === 'healthy') {
+                        dot.className = 'status-dot';
+                        label.textContent = 'API healthy';
+                    } else if (data.status === 'degraded') {
+                        dot.className = 'status-dot status-dot--warning';
+                        label.textContent = 'degraded';
+                    } else {
+                        dot.className = 'status-dot status-dot--error';
+                        label.textContent = data.status || 'disconnected';
+                    }
+                });
+
+                // Error-based disconnection detection
+                pollingService.on('error', ({ consecutiveErrors }) => {
+                    if (consecutiveErrors >= 3 && dot && label) {
+                        dot.className = 'status-dot status-dot--error';
+                        label.textContent = 'disconnected';
+                    }
+                });
+            }
+
+            /* ---- Toast Helper ---- */
+            window.showToast = function (message, type = 'info') {
+                const container = document.getElementById('toast-container');
+                if (!container) return;
+                const toast = document.createElement('div');
+                toast.className = `toast toast--${type}`;
+                toast.textContent = message;
+                container.appendChild(toast);
+                setTimeout(() => toast.remove(), 4000);
+            };
+
+            /* ---- Boot ---- */
+            document.addEventListener('DOMContentLoaded', () => {
+                // Initialize data fetching layer
+                initDataLayer();
+                bindHealthStatus();
+
+                // Start all polling channels
+                pollingService.startAll();
+
+                // Initialize legacy router if available
+                if (typeof Router !== 'undefined' && Router.init) {
+                    Router.init();
+                }
+
+                console.info('[Dashboard] All systems started. Polling active.');
+            });
+        })();
+    </script>
+</body>
+</html>

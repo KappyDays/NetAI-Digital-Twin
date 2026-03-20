@@ -1,0 +1,59 @@
+# =============================================================================
+# Git line-ending normalization
+# =============================================================================
+# Auto-detect text files and ensure LF in the repo
+* text=auto
+
+# Force LF for shell scripts (mounted into Linux containers)
+*.sh text eol=lf
+
+# Force LF for Docker/container config files
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+.dockerignore text eol=lf
+
+# Force LF for properties files (Java/Trino config)
+*.properties text eol=lf
+*.properties.template text eol=lf
+
+# Force LF for environment / config files (parsed by Docker & Python)
+.env text eol=lf
+*.env text eol=lf
+example.env text eol=lf
+
+# Force LF for YAML (docker-compose, CI/CD)
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Force LF for nginx config files (mounted into containers)
+*.conf text eol=lf
+
+# Force LF for Python source and config
+*.py text eol=lf
+*.toml text eol=lf
+*.cfg text eol=lf
+*.ini text eol=lf
+requirements*.txt text eol=lf
+
+# Force CRLF for PowerShell scripts (Windows-native)
+*.ps1 text eol=crlf
+
+# Force LF for web source files
+*.js text eol=lf
+*.jsx text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+
+# Binary files — do not touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.usd binary
+*.usda text eol=lf
+*.usdc binary
+*.usdz binary
