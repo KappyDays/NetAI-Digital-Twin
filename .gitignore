@@ -9,6 +9,13 @@ extra
 CLAUDE.md
 CLAUDE.md.bak
 .playwright-mcp/
+.gitsecret/
+
+# Subsystems not part of Lakehouse stack
+UWB/
+TwinX/
+Datacenter/
+Lakehouse/DeltaLake/
 
 # Presentation / reference (not needed on server)
 slides/
