@@ -44,8 +44,8 @@ COPY public/50x.html /usr/share/nginx/html/50x.html
 EXPOSE 80
 
 # Health check — verify nginx is responding
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://localhost/ || exit 1
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://127.0.0.1/ || exit 1
 
 # Run nginx in foreground
 CMD ["nginx", "-g", "daemon off;"]
