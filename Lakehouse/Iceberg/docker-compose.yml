@@ -10,7 +10,10 @@ services:
       - MINIO_ROOT_USER=${MINIO_ROOT_USER}
       - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
     networks:
-      - iceberg_net
+      iceberg_net:
+        aliases:
+          - warehouse2.minio
+          - usd-assets.minio
     command: ["server", "/data", "--console-address", ":9001"]
     volumes:
       - ./minio_data:/data
