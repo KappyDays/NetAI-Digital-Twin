@@ -117,7 +117,7 @@ async def insert_prims(request: PrimInsertRequest) -> PrimInsertResponse:
 
     # ── 4. Iceberg write ─────────────────────────────────────────────
     try:
-        records_dicts = [r.model_dump() for r in request.records]
+        records_dicts = [r.model_dump(by_alias=True) for r in request.records]
         count = iceberg_service.insert_static_prims(records_dicts)
     except Exception as exc:
         logger.error("Failed to insert static prims via Iceberg: %s", exc, exc_info=True)
