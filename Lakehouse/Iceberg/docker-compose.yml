@@ -96,6 +96,7 @@ services:
   trino:
     image: trinodb/trino:479
     container_name: trino
+    dns_search: []
     ports:
       - 8900:8080 # Trino Web UI & JDBC
     environment:
