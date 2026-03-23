@@ -22,14 +22,12 @@ from __future__ import annotations
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -187,61 +185,6 @@ def health_check():
 
 
 # ---------------------------------------------------------------------------
-# Static files (CSS, JS for web dashboard)
-# ---------------------------------------------------------------------------
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
-if _STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-
-_TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
-
-
-# ---------------------------------------------------------------------------
-# Dashboard — main web UI (served outside /api/v1 prefix for clean URLs)
-# ---------------------------------------------------------------------------
-@app.get("/dashboard", tags=["Dashboard"], response_class=HTMLResponse)
-@app.get("/dashboard/", tags=["Dashboard"], response_class=HTMLResponse, include_in_schema=False)
-async def dashboard_main():
-    """Serve the Lakehouse Digital-Twin web dashboard (SPA).
-
-    Features:
-    - Top-View spatial congestion heatmap (Plotly.js)
-    - Time-series congestion chart
-    - KPI summary strip
-    - Space browser & SQL query interface
-    - Hash-based client-side routing (#/overview, #/spaces, #/query)
-    """
-    html_path = _TEMPLATE_DIR / "dashboard.html"
-    if html_path.is_file():
-        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(
-        content="<h1>Dashboard not found</h1><p>Template missing.</p>",
-        status_code=404,
-    )
-
-
-@app.get("/dashboard/heatmap", tags=["Dashboard"])
-async def dashboard_heatmap():
-    """Serve the standalone congestion heatmap dashboard (Canvas-based).
-
-    Features:
-    - 2D grid-based top-view congestion heatmap (HTML5 Canvas)
-    - Multiple color scales (thermal, viridis, plasma, grayscale)
-    - Interactive tooltip with cell coordinates and object IDs
-    - Configurable grid resolution and world bounds
-    - Auto-refresh with adjustable interval
-    - Demo data mode for offline visualization
-    """
-    heatmap_path = _STATIC_DIR / "dashboard" / "heatmap.html"
-    if heatmap_path.is_file():
-        return FileResponse(str(heatmap_path), media_type="text/html")
-    return HTMLResponse(
-        content="<h1>Heatmap not found</h1><p>Static file missing.</p>",
-        status_code=404,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Root redirect
 # ---------------------------------------------------------------------------
 @app.get("/", tags=["System"])
@@ -252,5 +195,4 @@ def root():
         "version": app.version,
         "docs": "/docs",
         "health": "/api/v1/health",
-        "dashboard": "/dashboard",
     }

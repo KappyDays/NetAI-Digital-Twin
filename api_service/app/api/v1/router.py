@@ -6,7 +6,7 @@ Mounts all v1 sub-routers under /api/v1 prefix.
 
 from fastapi import APIRouter
 
-from app.api.v1 import dashboard, dynamic, health, prims, query, spaces, static, upload
+from app.api.v1 import dynamic, health, prims, query, spaces, static, upload
 from app.routers.dynamic_objects import router as dynamic_objects_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -19,4 +19,3 @@ api_router.include_router(dynamic_objects_router)  # /api/v1/dynamic-objects/* (
 api_router.include_router(spaces.router)        # /api/v1/spaces/*    (congestion summary + per-space objects)
 api_router.include_router(upload.router)
 api_router.include_router(query.router)
-api_router.include_router(dashboard.router)    # /api/v1/dashboard   (web dashboard UI)
