@@ -126,6 +126,7 @@ def get_catalog():
             **{
                 "type": "rest",
                 "uri": settings.iceberg_catalog_uri,
+                "oauth2-server-uri": f"{settings.iceberg_catalog_uri}/v1/oauth/tokens",
                 "credential": settings.polaris_credential,
                 "scope": settings.polaris_scope,
                 "warehouse": settings.iceberg_warehouse,

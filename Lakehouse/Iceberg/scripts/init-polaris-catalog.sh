@@ -119,6 +119,11 @@ echo "[init-polaris] Granting catalog admin to root principal role..."
 polaris_api PUT "${MGMT_BASE}/principal-roles/root/catalog-roles/${ICEBERG_WAREHOUSE}" \
     "{\"catalogRole\": {\"name\": \"catalog_admin\"}}" || true
 
+# ─── Grant CATALOG_MANAGE_CONTENT privilege ──────────────────────────────────
+echo "[init-polaris] Granting CATALOG_MANAGE_CONTENT to catalog_admin..."
+polaris_api PUT "${MGMT_BASE}/catalogs/${ICEBERG_WAREHOUSE}/catalog-roles/catalog_admin/grants" \
+    "{\"grant\":{\"type\":\"catalog\",\"privilege\":\"CATALOG_MANAGE_CONTENT\"}}" || true
+
 # ─── Create Namespace ───────────────────────────────────────────────────────
 echo "[init-polaris] Checking namespace '${ICEBERG_NAMESPACE}'..."
 
