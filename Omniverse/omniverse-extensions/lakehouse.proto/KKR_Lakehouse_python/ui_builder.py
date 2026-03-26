@@ -13,12 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import json
 import os
+import tempfile
 import traceback
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 
 import omni.ui as ui
 import omni.usd
@@ -29,11 +32,9 @@ from isaacsim.gui.components.element_wrappers import (
     TextBlock,
 )
 from isaacsim.gui.components.ui_utils import get_style
+from pxr import Sdf, Usd, UsdGeom
 
 # API middleware URL (env-var-driven for Docker/k8s portability).
-# Isaac Sim container is connected to iceberg_net via "docker network connect",
-# so it can resolve "lakehouse-api" by container name directly.
-# k8s: same — Services in the same namespace resolve by name.
 DEFAULT_API_BASE_URL = os.getenv("LAKEHOUSE_API_URL", "http://lakehouse-api:8000")
 
 
@@ -41,14 +42,15 @@ class UIBuilder:
     def __init__(self):
         self.frames = []
         self.wrapped_ui_elements = []
-        # Navigation state: "summary", "drilldown", or "object_detail"
-        self._nav_mode = "summary"
-        self._current_space_id = None
-        self._drilldown_cache = None  # Cached drill-down API response
-        # Object detail state (third navigation level)
-        self._selected_object_type = None   # "static" or "dynamic"
-        self._selected_object_data = None   # Full object dict for detail panel
-        self._selected_object_id = None     # Display identifier
+        # Backup state
+        self._last_backup_time = None
+        self._backup_entity_count = 0
+        self._backup_prim_count = 0
+        # Restore state
+        self._backup_times_list = []
+        self._restore_entities_list = []
+        self._selected_backup_idx = 0
+        self._selected_entity_idx = 0
 
     # =========================================================================
     #  Automatic callbacks wired by extension.py
@@ -73,9 +75,10 @@ class UIBuilder:
     def build_ui(self):
         self._create_status_frame()
         self._create_api_config_frame()
-        self._create_space_explorer_frame()
-        self._create_iceberg_export_frame()
-        self._create_s3_export_frame()
+        self._create_stage_management_frame()
+        self._create_entity_backup_frame()
+        self._create_entity_restore_frame()
+        self._create_sample_iot_frame()
 
     # =========================================================================
     #  Status Log
@@ -138,1094 +141,718 @@ class UIBuilder:
             self._set_status(f"[FAIL] Cannot connect to API: {e}")
 
     # =========================================================================
-    #  [Space Explorer] Congestion Summary + Object Drill-Down
+    #  Stage Management (Setup / Clear)
     # =========================================================================
 
-    # Color constants (0xAARRGGBB in omni.ui convention → actually 0xAABBGGRR)
-    _COLOR_GREEN = 0xFF00CC66   # 여유 (Low)
-    _COLOR_YELLOW = 0xFF00CCFF  # 보통 (Medium) — BGR: FF CC 00 = Orange-Yellow
-    _COLOR_RED = 0xFF3333FF     # 혼잡 (High) — BGR: FF 33 33 = Red
-    _COLOR_GRAY = 0xFF888888    # No data
-    _COLOR_CYAN = 0xFFFFCC00    # Dynamic object highlight (BGR: 00 CC FF = Cyan)
-    _COLOR_WHITE = 0xFFFFFFFF
-    _COLOR_DIM = 0xFFAAAAAA
-
-    # Status icon mapping for dynamic objects
-    _STATUS_ICONS = {
-        "active": "[A]",   # Active — seen recently
-        "idle": "[I]",     # Idle — not seen for 60-300s
-        "stale": "[S]",    # Stale — not seen for >300s
-        "unknown": "[?]",
-    }
-    _STATUS_COLORS = {
-        "active": 0xFF00CC66,   # Green
-        "idle": 0xFF00CCFF,     # Yellow
-        "stale": 0xFF3333FF,    # Red
-        "unknown": 0xFF888888,  # Gray
-    }
-
-    @staticmethod
-    def _congestion_status(level: float) -> tuple:
-        """Return (label, color) based on congestion_level (0.0–1.0)."""
-        if level < 0.4:
-            return "Low", UIBuilder._COLOR_GREEN
-        elif level < 0.7:
-            return "Medium", UIBuilder._COLOR_YELLOW
-        else:
-            return "High", UIBuilder._COLOR_RED
-
-    def _create_space_explorer_frame(self):
-        """Create the combined space summary + drill-down frame."""
-        frame = CollapsableFrame("Space Explorer (Congestion + Drill-Down)", collapsed=False)
+    def _create_stage_management_frame(self):
+        frame = CollapsableFrame("Stage Management", collapsed=False)
         with frame:
             with ui.VStack(style=get_style(), spacing=5, height=0):
                 ui.Label(
-                    "Congestion overview with per-space drill-down.\n"
-                    "Click a space row to view object-level details.\n"
-                    "Colors: Green=Low | Yellow=Medium | Red=High",
+                    "Setup a test Stage with 3 Xform groups (Environment, Robots, Props)\n"
+                    "using Nucleus Reference assets, or clear the Stage.",
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA},
+                )
+                with ui.HStack(height=30, spacing=8):
+                    btn_setup = Button(
+                        "Stage Setup",
+                        "SETUP STAGE",
+                        tooltip="Create /World with 3 Xform groups + Reference assets",
+                        on_click_fn=self._on_stage_setup,
+                    )
+                    self.wrapped_ui_elements.append(btn_setup)
+
+                    btn_clear = Button(
+                        "Stage Clear",
+                        "CLEAR STAGE",
+                        tooltip="Remove all Prims under /World",
+                        on_click_fn=self._on_stage_clear,
+                    )
+                    self.wrapped_ui_elements.append(btn_clear)
+
+    def _on_stage_setup(self):
+        """Create /World with 3 Xform groups + Nucleus Reference assets."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                self._set_status("[FAIL] No active Stage. Open or create a Stage first.")
+                return
+
+            # Ensure /World exists as default prim
+            world_prim = stage.GetPrimAtPath("/World")
+            if not world_prim.IsValid():
+                UsdGeom.Xform.Define(stage, "/World")
+                stage.SetDefaultPrim(stage.GetPrimAtPath("/World"))
+
+            # Get Nucleus assets root
+            try:
+                from isaacsim.storage.native import get_assets_root_path
+                root = get_assets_root_path()
+            except Exception:
+                root = None
+
+            if not root:
+                self._set_status(
+                    "[FAIL] Nucleus not connected. Cannot load Reference assets.\n"
+                    "Connect to Nucleus first (Omniverse > Nucleus)."
+                )
+                return
+
+            # ── Xform 1: Environment ──
+            UsdGeom.Xform.Define(stage, "/World/Environment")
+            self._add_reference(stage, f"{root}/Isaac/Environments/Grid/default_environment.usd", "/World/Environment/Grid")
+            self._add_reference(stage, f"{root}/Isaac/Props/Mounts/ThorlabsTable/table_instanceable.usd", "/World/Environment/Table")
+
+            # ── Xform 2: Robots ──
+            UsdGeom.Xform.Define(stage, "/World/Robots")
+            self._add_reference(stage, f"{root}/Isaac/Robots/Jetbot/jetbot.usd", "/World/Robots/Jetbot")
+            self._add_reference(stage, f"{root}/Isaac/Robots/Kaya/kaya.usd", "/World/Robots/Kaya")
+
+            # ── Xform 3: Props ──
+            UsdGeom.Xform.Define(stage, "/World/Props")
+            self._add_reference(stage, f"{root}/Isaac/Props/Blocks/basic_block.usd", "/World/Props/Block_A")
+            self._add_reference(stage, f"{root}/Isaac/Props/Blocks/basic_block.usd", "/World/Props/Block_B")
+
+            self._set_status(
+                "[OK] Stage Setup complete.\n"
+                "Created: /World/Environment (Grid, Table)\n"
+                "         /World/Robots (Jetbot, Kaya)\n"
+                "         /World/Props (Block_A, Block_B)"
+            )
+        except Exception as e:
+            self._set_status(f"[FAIL] Stage Setup error:\n{traceback.format_exc()}")
+
+    @staticmethod
+    def _add_reference(stage, asset_path: str, prim_path: str):
+        """Add a USD Reference to the stage at the given prim path."""
+        prim = stage.DefinePrim(prim_path)
+        prim.GetReferences().AddReference(asset_path)
+
+    def _on_stage_clear(self):
+        """Remove all Prims under /World."""
+        try:
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                self._set_status("[FAIL] No active Stage.")
+                return
+
+            world_prim = stage.GetPrimAtPath("/World")
+            if not world_prim.IsValid():
+                self._set_status("[INFO] /World does not exist. Nothing to clear.")
+                return
+
+            children = list(world_prim.GetChildren())
+            count = len(children)
+            for child in children:
+                stage.RemovePrim(child.GetPath())
+
+            self._set_status(f"[OK] Stage Clear: removed {count} child Prim(s) under /World.")
+        except Exception as e:
+            self._set_status(f"[FAIL] Stage Clear error:\n{traceback.format_exc()}")
+
+    # =========================================================================
+    #  Entity Backup
+    # =========================================================================
+
+    def _create_entity_backup_frame(self):
+        frame = CollapsableFrame("Entity Backup", collapsed=False)
+        with frame:
+            with ui.VStack(style=get_style(), spacing=5, height=0):
+                ui.Label(
+                    "Scan the Stage for Entity boundaries (Reference/Payload),\n"
+                    "compute hashes, export USD binaries to MinIO, and save\n"
+                    "Entity + Prim Snapshot data to Iceberg.",
                     word_wrap=True,
                     style={"color": 0xFFAAAAAA},
                 )
 
-                # Navigation breadcrumb bar
-                self._nav_bar = ui.HStack(height=28, spacing=4)
-                with self._nav_bar:
-                    self._nav_label = ui.Label(
-                        "All Spaces (Summary View)",
-                        style={"color": 0xFF66CCFF, "font_size": 14},
-                        width=ui.Fraction(4),
-                    )
-
-                # Main content container — switches between summary and drilldown
-                self._explorer_container = ui.VStack(spacing=4, height=0)
-                with self._explorer_container:
-                    ui.Label(
-                        "Press 'REFRESH' to load congestion data.",
-                        style={"color": 0xFF999999},
-                    )
-
-                # Action buttons row
-                with ui.HStack(height=30, spacing=4):
-                    btn_refresh = Button(
-                        "Refresh",
-                        "REFRESH",
-                        tooltip="Fetch latest congestion data from API",
-                        on_click_fn=self._on_refresh_congestion,
-                    )
-                    self.wrapped_ui_elements.append(btn_refresh)
-
-                    btn_back = Button(
-                        "Back to Summary",
-                        "BACK",
-                        tooltip="Return to space summary view",
-                        on_click_fn=self._on_navigate_back,
-                    )
-                    self.wrapped_ui_elements.append(btn_back)
-
-    # ── Navigation Logic ──────────────────────────────────────────────
-
-    def _navigate_to_drilldown(self, space_id: str):
-        """Switch from summary view to drill-down view for a specific space."""
-        self._nav_mode = "drilldown"
-        self._current_space_id = space_id
-        self._nav_label.text = f"Space: {space_id} (Drill-Down View)"
-
-        self._set_status(f"Loading drill-down for space '{space_id}'...")
-
-        try:
-            # URL-encode the space_id for the API call
-            encoded = urllib.request.quote(space_id, safe="")
-            result = self._api_get(f"api/v1/static/spaces/{encoded}/drilldown")
-            self._drilldown_cache = result
-        except Exception as e:
-            self._set_status(f"[FAIL] Drill-down API error: {e}")
-            # Generate demo drill-down data for offline testing
-            result = self._demo_drilldown_data(space_id)
-            self._drilldown_cache = result
-
-        self._render_drilldown_panel(result)
-
-    def _navigate_to_object_detail(self, obj_type: str, obj_data: dict, obj_id: str):
-        """Switch to object detail view (third navigation level).
-
-        Args:
-            obj_type: "static" or "dynamic"
-            obj_data: Full object dict from drill-down cache
-            obj_id: Human-readable identifier (prim_path or object_id)
-        """
-        self._nav_mode = "object_detail"
-        self._selected_object_type = obj_type
-        self._selected_object_data = obj_data
-        self._selected_object_id = obj_id
-
-        # Shorten display name for breadcrumb
-        short_name = obj_id.rsplit("/", 1)[-1] if "/" in obj_id else obj_id
-        self._nav_label.text = (
-            f"Spaces > {self._current_space_id} > {short_name} (Detail)"
-        )
-
-        self._render_object_detail_panel(obj_type, obj_data)
-
-    def _on_navigate_back(self):
-        """Navigate back one level in the hierarchy.
-
-        Levels: summary → drilldown → object_detail
-        Back from object_detail → drilldown (re-render from cache)
-        Back from drilldown → summary (re-fetch congestion)
-        """
-        if self._nav_mode == "object_detail":
-            # Return to drill-down level
-            self._nav_mode = "drilldown"
-            self._selected_object_type = None
-            self._selected_object_data = None
-            self._selected_object_id = None
-            self._nav_label.text = f"Space: {self._current_space_id} (Drill-Down View)"
-            if self._drilldown_cache:
-                self._render_drilldown_panel(self._drilldown_cache)
-            else:
-                self._navigate_to_drilldown(self._current_space_id)
-        else:
-            # Return to summary level
-            self._nav_mode = "summary"
-            self._current_space_id = None
-            self._drilldown_cache = None
-            self._selected_object_type = None
-            self._selected_object_data = None
-            self._selected_object_id = None
-            self._nav_label.text = "All Spaces (Summary View)"
-            # Re-fetch congestion data
-            self._on_refresh_congestion()
-
-    # ── Congestion Summary View ───────────────────────────────────────
-
-    def _on_refresh_congestion(self):
-        """Fetch congestion data from API and rebuild the panel."""
-        # If in object_detail mode, go back to drilldown and refresh
-        if self._nav_mode == "object_detail" and self._current_space_id:
-            self._nav_mode = "drilldown"
-            self._selected_object_type = None
-            self._selected_object_data = None
-            self._selected_object_id = None
-            self._navigate_to_drilldown(self._current_space_id)
-            return
-        # If currently in drilldown mode and user clicks refresh, reload drilldown
-        if self._nav_mode == "drilldown" and self._current_space_id:
-            self._navigate_to_drilldown(self._current_space_id)
-            return
-
-        try:
-            result = self._api_get("api/v1/congestion")
-        except Exception as e:
-            self._set_status(f"[FAIL] Congestion fetch error: {e}")
-            result = self._demo_congestion_data()
-
-        self._render_congestion_panel(result)
-
-    @staticmethod
-    def _demo_congestion_data() -> dict:
-        """Generate demo data when API is not available."""
-        import datetime as _dt
-
-        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        return {
-            "spaces": [
-                {"space_id": "Room_A", "object_count": 2, "congestion_level": 0.25, "timestamp": now},
-                {"space_id": "Room_B", "object_count": 5, "congestion_level": 0.65, "timestamp": now},
-                {"space_id": "Hallway_01", "object_count": 8, "congestion_level": 0.90, "timestamp": now},
-            ],
-            "total_objects": 15,
-            "snapshot_time": now,
-        }
-
-    @staticmethod
-    def _demo_drilldown_data(space_id: str) -> dict:
-        """Generate demo drill-down data when API is not available."""
-        import datetime as _dt
-
-        now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-        return {
-            "space_id": space_id,
-            "static_count": 5,
-            "dynamic_count": 2,
-            "type_distribution": {"Mesh": 3, "Xform": 1, "DistantLight": 1},
-            "static_objects": [
-                {
-                    "prim_path": f"/World/{space_id}/Floor",
-                    "object_type": "Mesh",
-                    "parent_path": f"/World/{space_id}",
-                    "position": {"x": 0.0, "y": 0.0, "z": 0.0},
-                    "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
-                    "scale": {"x": 1.0, "y": 1.0, "z": 1.0},
-                    "visibility": "inherited",
-                    "material_path": "/World/Looks/Floor_Mat",
-                    "semantic_label": "floor",
-                    "child_count": 0,
-                    "depth": 1,
-                    "properties_raw": "{}",
-                },
-                {
-                    "prim_path": f"/World/{space_id}/Chair_01",
-                    "object_type": "Mesh",
-                    "parent_path": f"/World/{space_id}",
-                    "position": {"x": 1.5, "y": 0.0, "z": 2.0},
-                    "rotation": {"x": 0.0, "y": 45.0, "z": 0.0},
-                    "scale": {"x": 1.0, "y": 1.0, "z": 1.0},
-                    "visibility": "inherited",
-                    "material_path": None,
-                    "semantic_label": "chair",
-                    "child_count": 0,
-                    "depth": 1,
-                    "properties_raw": "{}",
-                },
-                {
-                    "prim_path": f"/World/{space_id}/Table_01",
-                    "object_type": "Mesh",
-                    "parent_path": f"/World/{space_id}",
-                    "position": {"x": 3.0, "y": 0.0, "z": 2.0},
-                    "rotation": {"x": 0.0, "y": 0.0, "z": 0.0},
-                    "scale": {"x": 1.0, "y": 1.0, "z": 1.0},
-                    "visibility": "inherited",
-                    "material_path": "/World/Looks/Wood_Mat",
-                    "semantic_label": "table",
-                    "child_count": 2,
-                    "depth": 1,
-                    "properties_raw": "{}",
-                },
-                {
-                    "prim_path": f"/World/{space_id}/Lights",
-                    "object_type": "Xform",
-                    "parent_path": f"/World/{space_id}",
-                    "position": {"x": 0.0, "y": 3.0, "z": 0.0},
-                    "rotation": None,
-                    "scale": None,
-                    "visibility": "inherited",
-                    "material_path": None,
-                    "semantic_label": None,
-                    "child_count": 1,
-                    "depth": 1,
-                    "properties_raw": "{}",
-                },
-                {
-                    "prim_path": f"/World/{space_id}/Lights/Ceiling_Light",
-                    "object_type": "DistantLight",
-                    "parent_path": f"/World/{space_id}/Lights",
-                    "position": {"x": 0.0, "y": 3.0, "z": 0.0},
-                    "rotation": None,
-                    "scale": None,
-                    "visibility": "inherited",
-                    "material_path": None,
-                    "semantic_label": None,
-                    "child_count": 0,
-                    "depth": 2,
-                    "properties_raw": "{}",
-                },
-            ],
-            "dynamic_objects": [
-                {
-                    "object_id": "robot_01",
-                    "position": {"x": 2.1, "y": 0.0, "z": 1.5},
-                    "rotation": {"x": 0.0, "y": 90.0, "z": 0.0},
-                    "speed": 0.5,
-                    "space_id": space_id,
-                    "last_seen": now,
-                    "status": "active",
-                    "properties": "{}",
-                },
-                {
-                    "object_id": "agv_03",
-                    "position": {"x": 4.0, "y": 0.0, "z": 3.0},
-                    "rotation": {"x": 0.0, "y": 180.0, "z": 0.0},
-                    "speed": 0.0,
-                    "space_id": space_id,
-                    "last_seen": now,
-                    "status": "idle",
-                    "properties": "{}",
-                },
-            ],
-            "last_static_ingestion": now,
-            "snapshot_time": now,
-        }
-
-    def _render_congestion_panel(self, data: dict):
-        """Rebuild the explorer container with congestion summary data.
-
-        Renders a per-space congestion summary panel widget with:
-        - Space name (공간명)
-        - Congestion numeric value (혼잡도 수치, 0–100%)
-        - Color indicator dot + progress bar (색상 인디케이터)
-          Green (< 40%) | Yellow (40–70%) | Red (>= 70%)
-        """
-        spaces = data.get("spaces", [])
-        total_objects = data.get("total_objects", 0)
-        snapshot_time = data.get("snapshot_time", "N/A")
-
-        self._explorer_container.clear()
-
-        with self._explorer_container:
-            # ══════════════════════════════════════════════════════════
-            #  Overall Summary Statistics Bar
-            # ══════════════════════════════════════════════════════════
-            with ui.ZStack(height=48):
-                ui.Rectangle(
-                    style={"background_color": 0xFF1A1A2E, "border_radius": 6},
+                btn = Button(
+                    "Entity Backup to Lakehouse",
+                    "BACKUP",
+                    tooltip="Run full Entity backup (Iceberg + MinIO)",
+                    on_click_fn=self._on_entity_backup,
                 )
-                with ui.VStack(spacing=2, height=0):
-                    ui.Spacer(height=4)
-                    with ui.HStack(height=18, spacing=8):
-                        ui.Spacer(width=8)
-                        ui.Label(
-                            f"Spaces: {len(spaces)}",
-                            style={"color": 0xFF66CCFF, "font_size": 13},
-                            width=ui.Fraction(1),
-                        )
-                        ui.Label(
-                            f"Total Objects: {total_objects}",
-                            style={"color": self._COLOR_WHITE, "font_size": 13},
-                            width=ui.Fraction(1),
-                        )
-                        # Overall congestion indicator
-                        if spaces:
-                            avg_level = sum(
-                                sp.get("congestion_level", 0.0) for sp in spaces
-                            ) / len(spaces)
-                            avg_label, avg_color = self._congestion_status(avg_level)
-                            ui.Label(
-                                f"Avg: {avg_level * 100:.0f}% ({avg_label})",
-                                style={"color": avg_color, "font_size": 13},
-                                width=ui.Fraction(1),
-                            )
-                        else:
-                            ui.Label(
-                                "Avg: N/A",
-                                style={"color": self._COLOR_GRAY, "font_size": 13},
-                                width=ui.Fraction(1),
-                            )
-                    with ui.HStack(height=16, spacing=8):
-                        ui.Spacer(width=8)
-                        ui.Label(
-                            f"Snapshot: {str(snapshot_time)[:19]}",
-                            style={"color": self._COLOR_DIM, "font_size": 11},
-                        )
+                self.wrapped_ui_elements.append(btn)
 
-            ui.Spacer(height=4)
-
-            if not spaces:
-                ui.Label(
-                    "No space congestion data available.",
-                    style={"color": 0xFFAAAA55},
-                )
-            else:
-                # ══════════════════════════════════════════════════════
-                #  Column Headers
-                # ══════════════════════════════════════════════════════
-                with ui.HStack(height=22, spacing=4):
-                    ui.Label("", width=14)  # color dot placeholder
-                    ui.Label("Space (click to drill-down)", width=ui.Fraction(3),
-                             style={"color": 0xFFDDDDDD, "font_size": 12})
-                    ui.Label("Obj", width=ui.Fraction(1),
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": 0xFFDDDDDD, "font_size": 12})
-                    ui.Label("Level", width=ui.Fraction(1),
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": 0xFFDDDDDD, "font_size": 12})
-                    ui.Label("Status", width=ui.Fraction(1),
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": 0xFFDDDDDD, "font_size": 12})
-                    ui.Label("Congestion Bar", width=ui.Fraction(2),
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": 0xFFDDDDDD, "font_size": 12})
-
-                # ══════════════════════════════════════════════════════
-                #  Per-Space Congestion Rows
-                # ══════════════════════════════════════════════════════
-                for sp in spaces:
-                    space_id = sp.get("space_id", "?")
-                    obj_count = sp.get("object_count", 0)
-                    level = sp.get("congestion_level", 0.0)
-                    label, color = self._congestion_status(level)
-
-                    # Wrap row in a ZStack so background rect can receive click
-                    with ui.ZStack(height=30):
-                        # Clickable background
-                        bg_rect = ui.Rectangle(
-                            style={
-                                "background_color": 0xFF222222,
-                                "border_radius": 4,
-                                ":hovered": {"background_color": 0xFF333344},
-                            },
-                        )
-                        # Bind click — capture space_id in closure
-                        _sid = space_id  # capture
-                        bg_rect.set_mouse_pressed_fn(
-                            lambda x, y, btn, mod, sid=_sid: self._navigate_to_drilldown(sid)
-                        )
-
-                        with ui.HStack(height=28, spacing=4):
-                            ui.Spacer(width=2)
-                            # ── Color indicator dot (rounded rect as circle) ──
-                            with ui.ZStack(width=14, height=28):
-                                ui.Spacer(height=7)
-                                ui.Rectangle(
-                                    width=14,
-                                    height=14,
-                                    style={"background_color": color, "border_radius": 7},
-                                )
-                                ui.Spacer(height=7)
-                            # ── Space name (clickable hint with arrow) ──
-                            ui.Label(
-                                f" > {space_id}",
-                                width=ui.Fraction(3),
-                                style={"color": 0xFF66CCFF, "font_size": 13},
-                            )
-                            # ── Object count ──
-                            ui.Label(
-                                str(obj_count),
-                                width=ui.Fraction(1),
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": self._COLOR_WHITE, "font_size": 13},
-                            )
-                            # ── Congestion percentage ──
-                            ui.Label(
-                                f"{level * 100:.0f}%",
-                                width=ui.Fraction(1),
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": color, "font_size": 14},
-                            )
-                            # ── Status label (Low/Medium/High) ──
-                            ui.Label(
-                                label,
-                                width=ui.Fraction(1),
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": color, "font_size": 13},
-                            )
-                            # ── Congestion bar (visual progress) ──
-                            with ui.ZStack(width=ui.Fraction(2), height=18):
-                                ui.Rectangle(
-                                    style={"background_color": 0xFF333333, "border_radius": 3},
-                                )
-                                with ui.HStack(spacing=0):
-                                    bar_frac = max(level, 0.02)
-                                    ui.Rectangle(
-                                        width=ui.Fraction(int(bar_frac * 100)),
-                                        style={"background_color": color, "border_radius": 3},
-                                    )
-                                    ui.Spacer(width=ui.Fraction(int((1.0 - bar_frac) * 100)))
-
-                # ══════════════════════════════════════════════════════
-                #  Legend
-                # ══════════════════════════════════════════════════════
-                ui.Spacer(height=4)
-                with ui.HStack(height=18, spacing=12):
-                    for lbl, clr in [
-                        ("Low (< 40%)", self._COLOR_GREEN),
-                        ("Medium (40-70%)", self._COLOR_YELLOW),
-                        ("High (>= 70%)", self._COLOR_RED),
-                    ]:
-                        with ui.HStack(spacing=4, width=ui.Fraction(1)):
-                            with ui.ZStack(width=10, height=18):
-                                ui.Spacer(height=4)
-                                ui.Rectangle(
-                                    width=10,
-                                    height=10,
-                                    style={"background_color": clr, "border_radius": 5},
-                                )
-                                ui.Spacer(height=4)
-                            ui.Label(
-                                lbl,
-                                style={"color": self._COLOR_DIM, "font_size": 11},
-                            )
-
-        self._set_status(
-            f"[OK] Congestion data loaded: {len(spaces)} spaces, "
-            f"{total_objects} total objects. Click a space to drill down."
-        )
-
-    # ── Drill-Down View ───────────────────────────────────────────────
-
-    def _render_drilldown_panel(self, data: dict):
-        """Render the object-level drill-down for a single space."""
-        space_id = data.get("space_id", "?")
-        static_count = data.get("static_count", 0)
-        dynamic_count = data.get("dynamic_count", 0)
-        type_dist = data.get("type_distribution", {})
-        static_objects = data.get("static_objects", [])
-        dynamic_objects = data.get("dynamic_objects", [])
-        last_ingestion = data.get("last_static_ingestion", "N/A")
-        snapshot = data.get("snapshot_time", "N/A")
-
-        self._explorer_container.clear()
-
-        with self._explorer_container:
-            # ── Summary Header ──
-            with ui.VStack(spacing=3, height=0):
-                ui.Label(
-                    f"Space: {space_id}",
-                    style={"color": 0xFF66CCFF, "font_size": 16},
-                )
-                with ui.HStack(height=20, spacing=8):
-                    ui.Label(
-                        f"Static: {static_count}",
-                        style={"color": self._COLOR_DIM, "font_size": 12},
-                        width=ui.Fraction(1),
-                    )
-                    ui.Label(
-                        f"Dynamic: {dynamic_count}",
-                        style={"color": self._COLOR_CYAN, "font_size": 12},
-                        width=ui.Fraction(1),
-                    )
-                    ui.Label(
-                        f"Snapshot: {str(snapshot)[:19]}",
-                        style={"color": self._COLOR_DIM, "font_size": 12},
-                        width=ui.Fraction(2),
-                    )
-
-                # Type distribution mini-chart
-                if type_dist:
-                    with ui.HStack(height=20, spacing=4):
-                        ui.Label(
-                            "Types: ",
-                            style={"color": self._COLOR_DIM, "font_size": 12},
-                            width=50,
-                        )
-                        type_str = " | ".join(
-                            f"{t}: {c}" for t, c in sorted(type_dist.items(), key=lambda x: -x[1])
-                        )
-                        ui.Label(
-                            type_str,
-                            style={"color": self._COLOR_WHITE, "font_size": 12},
-                            word_wrap=True,
-                        )
-
-            ui.Spacer(height=6)
-
-            # ═══════════════════════════════════════════════════════════
-            #  Dynamic Objects Section (IoT / Tracked)
-            # ═══════════════════════════════════════════════════════════
-            if dynamic_objects:
-                ui.Label(
-                    f"Dynamic Objects ({len(dynamic_objects)})",
-                    style={"color": self._COLOR_CYAN, "font_size": 14},
-                )
-                ui.Spacer(height=2)
-
-                # Column headers
-                with ui.HStack(height=20, spacing=4):
-                    ui.Label("Status", width=40,
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Object ID", width=ui.Fraction(2),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Position (X, Y, Z)", width=ui.Fraction(3),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Speed", width=ui.Fraction(1),
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Last Seen", width=ui.Fraction(2),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-
-                for dobj in dynamic_objects:
-                    obj_id = dobj.get("object_id", "?")
-                    pos = dobj.get("position", {})
-                    rot = dobj.get("rotation", {})
-                    speed = dobj.get("speed", 0.0)
-                    status = dobj.get("status", "unknown")
-                    last_seen = dobj.get("last_seen", "N/A")
-                    status_icon = self._STATUS_ICONS.get(status, "[?]")
-                    status_color = self._STATUS_COLORS.get(status, self._COLOR_GRAY)
-
-                    # Clickable row with hover effect
-                    with ui.ZStack(height=26):
-                        dyn_bg = ui.Rectangle(
-                            style={
-                                "background_color": 0xFF1A1A2A,
-                                "border_radius": 3,
-                                ":hovered": {"background_color": 0xFF2A2A44},
-                            },
-                        )
-                        # Capture object data for click handler
-                        _dobj = dobj
-                        _oid = obj_id
-                        dyn_bg.set_mouse_pressed_fn(
-                            lambda x, y, btn, mod, d=_dobj, oid=_oid: (
-                                self._navigate_to_object_detail("dynamic", d, oid)
-                            )
-                        )
-
-                        with ui.HStack(height=24, spacing=4):
-                            ui.Label(
-                                status_icon,
-                                width=40,
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": status_color, "font_size": 13},
-                            )
-                            ui.Label(
-                                f"  {obj_id}",
-                                width=ui.Fraction(2),
-                                style={"color": self._COLOR_CYAN, "font_size": 12},
-                                tooltip="Click to view object details",
-                            )
-                            pos_str = (
-                                f"({pos.get('x', 0):.1f}, "
-                                f"{pos.get('y', 0):.1f}, "
-                                f"{pos.get('z', 0):.1f})"
-                            )
-                            ui.Label(
-                                pos_str,
-                                width=ui.Fraction(3),
-                                style={"color": self._COLOR_WHITE, "font_size": 12},
-                            )
-                            ui.Label(
-                                f"{speed:.1f} m/s",
-                                width=ui.Fraction(1),
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": self._COLOR_WHITE, "font_size": 12},
-                            )
-                            ui.Label(
-                                str(last_seen)[:19] if last_seen else "N/A",
-                                width=ui.Fraction(2),
-                                style={"color": self._COLOR_DIM, "font_size": 11},
-                            )
-
-                ui.Spacer(height=6)
-
-            # ═══════════════════════════════════════════════════════════
-            #  Static Objects Section (Scene Graph Prims)
-            # ═══════════════════════════════════════════════════════════
-            ui.Label(
-                f"Static Objects ({len(static_objects)})",
-                style={"color": self._COLOR_WHITE, "font_size": 14},
-            )
-            ui.Spacer(height=2)
-
-            if not static_objects:
-                ui.Label(
-                    "No static objects found in this space.",
-                    style={"color": self._COLOR_DIM},
-                )
-            else:
-                # Column headers for static objects
-                with ui.HStack(height=20, spacing=4):
-                    ui.Label("D", width=20,
-                             tooltip="Hierarchy depth",
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Prim Path", width=ui.Fraction(3),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Type", width=ui.Fraction(1),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Position (X, Y, Z)", width=ui.Fraction(2),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Label", width=ui.Fraction(1),
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-                    ui.Label("Ch", width=30,
-                             tooltip="Child count",
-                             alignment=ui.Alignment.CENTER,
-                             style={"color": self._COLOR_DIM, "font_size": 11})
-
-                # Render up to 200 objects to avoid UI slowdown
-                display_limit = 200
-                for i, sobj in enumerate(static_objects[:display_limit]):
-                    prim_path = sobj.get("prim_path", "?")
-                    obj_type = sobj.get("object_type", "?")
-                    pos = sobj.get("position")
-                    depth = sobj.get("depth", 0)
-                    label = sobj.get("semantic_label", "")
-                    child_count = sobj.get("child_count", 0)
-
-                    # Indent based on depth for visual hierarchy
-                    indent = "  " * min(depth, 4)
-                    # Show only the last path segment for readability
-                    short_path = prim_path.rsplit("/", 1)[-1] if "/" in prim_path else prim_path
-                    display_name = f"{indent}{short_path}"
-
-                    # Alternate row colors with hover highlight
-                    row_bg = 0xFF1A1A1A if i % 2 == 0 else 0xFF222222
-
-                    with ui.ZStack(height=22):
-                        static_bg = ui.Rectangle(
-                            style={
-                                "background_color": row_bg,
-                                "border_radius": 2,
-                                ":hovered": {"background_color": 0xFF2A3333},
-                            },
-                        )
-                        # Capture object data for click handler
-                        _sobj = sobj
-                        _pp = prim_path
-                        static_bg.set_mouse_pressed_fn(
-                            lambda x, y, btn, mod, d=_sobj, pp=_pp: (
-                                self._navigate_to_object_detail("static", d, pp)
-                            )
-                        )
-
-                        with ui.HStack(height=22, spacing=4):
-                            ui.Label(
-                                str(depth),
-                                width=20,
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": self._COLOR_DIM, "font_size": 11},
-                            )
-                            ui.Label(
-                                display_name,
-                                width=ui.Fraction(3),
-                                tooltip=f"{prim_path} (click for details)",
-                                style={"color": self._COLOR_WHITE, "font_size": 12},
-                            )
-                            ui.Label(
-                                obj_type,
-                                width=ui.Fraction(1),
-                                style={"color": 0xFF88AACC, "font_size": 12},
-                            )
-                            if pos:
-                                pos_str = (
-                                    f"({pos.get('x', 0):.1f}, "
-                                    f"{pos.get('y', 0):.1f}, "
-                                    f"{pos.get('z', 0):.1f})"
-                                )
-                            else:
-                                pos_str = "(N/A)"
-                            ui.Label(
-                                pos_str,
-                                width=ui.Fraction(2),
-                                style={"color": self._COLOR_DIM, "font_size": 12},
-                            )
-                            ui.Label(
-                                label or "-",
-                                width=ui.Fraction(1),
-                                style={"color": 0xFF88CC88 if label else self._COLOR_DIM, "font_size": 12},
-                            )
-                            ui.Label(
-                                str(child_count) if child_count > 0 else "-",
-                                width=30,
-                                alignment=ui.Alignment.CENTER,
-                                style={"color": self._COLOR_DIM, "font_size": 11},
-                            )
-
-                if len(static_objects) > display_limit:
-                    ui.Label(
-                        f"... and {len(static_objects) - display_limit} more objects "
-                        f"(showing first {display_limit})",
-                        style={"color": self._COLOR_DIM, "font_size": 11},
-                    )
-
-            # ── Footer ──
-            ui.Spacer(height=4)
-            with ui.HStack(height=18, spacing=4):
-                ui.Label(
-                    f"Last ingestion: {str(last_ingestion)[:19] if last_ingestion else 'N/A'}",
-                    style={"color": self._COLOR_DIM, "font_size": 11},
-                )
-
-        self._set_status(
-            f"[OK] Drill-down loaded: {space_id} — "
-            f"{static_count} static + {dynamic_count} dynamic objects. "
-            f"Click any object row for details."
-        )
-
-    # ── Object Detail View (Third Level) ─────────────────────────────
-
-    # Property label colors by category for visual grouping
-    _DETAIL_SECTION_COLORS = {
-        "identity": 0xFF66CCFF,     # Cyan — identity fields
-        "transform": 0xFF88FF88,    # Green — spatial/transform fields
-        "visual": 0xFFFFCC66,       # Gold — visual/material fields
-        "hierarchy": 0xFFCC88FF,    # Purple — hierarchy fields
-        "iot": 0xFF66FFCC,          # Teal — IoT/sensor fields
-        "meta": 0xFFAAAACC,         # Muted lavender — metadata
-    }
-
-    def _render_object_detail_panel(self, obj_type: str, data: dict):
-        """Render a full detail panel for a single object.
-
-        Supports both static (USD Prim) and dynamic (IoT) object types.
-        Shows all available properties in categorized sections.
-        """
-        self._explorer_container.clear()
-
-        with self._explorer_container:
-            if obj_type == "static":
-                self._render_static_object_detail(data)
-            elif obj_type == "dynamic":
-                self._render_dynamic_object_detail(data)
-            else:
-                ui.Label(
-                    f"Unknown object type: {obj_type}",
-                    style={"color": self._COLOR_RED},
-                )
-
-    def _render_static_object_detail(self, data: dict):
-        """Render detail panel for a static USD Prim object."""
-        prim_path = data.get("prim_path", "?")
-        obj_type = data.get("object_type", "?")
-        parent_path = data.get("parent_path", "")
-        pos = data.get("position")
-        rot = data.get("rotation")
-        scale = data.get("scale")
-        visibility = data.get("visibility", "N/A")
-        material = data.get("material_path")
-        sem_label = data.get("semantic_label")
-        child_count = data.get("child_count", 0)
-        depth = data.get("depth", 0)
-        props_raw = data.get("properties_raw", "{}")
-
-        # ── Header ──
-        short_name = prim_path.rsplit("/", 1)[-1] if "/" in prim_path else prim_path
-        with ui.VStack(spacing=2, height=0):
-            ui.Label(
-                f"Static Object: {short_name}",
-                style={"color": self._DETAIL_SECTION_COLORS["identity"], "font_size": 16},
-            )
-            ui.Label(
-                f"Type: {obj_type}",
-                style={"color": 0xFF88AACC, "font_size": 13},
-            )
-            ui.Spacer(height=4)
-
-        # ── Identity Section ──
-        self._detail_section_header("Identity", "identity")
-        self._detail_kv_row("Prim Path", prim_path, "identity")
-        self._detail_kv_row("Parent Path", parent_path or "(root)", "identity")
-        self._detail_kv_row("Object Type", obj_type, "identity")
-        self._detail_kv_row("Semantic Label", sem_label or "(none)", "identity")
-
-        ui.Spacer(height=6)
-
-        # ── Transform Section ──
-        self._detail_section_header("Transform", "transform")
-        if pos:
-            self._detail_kv_row(
-                "Position",
-                f"X={pos.get('x', 0):.3f}  Y={pos.get('y', 0):.3f}  Z={pos.get('z', 0):.3f}",
-                "transform",
-            )
-        else:
-            self._detail_kv_row("Position", "(N/A)", "transform")
-        if rot:
-            self._detail_kv_row(
-                "Rotation",
-                f"X={rot.get('x', 0):.1f}°  Y={rot.get('y', 0):.1f}°  Z={rot.get('z', 0):.1f}°",
-                "transform",
-            )
-        else:
-            self._detail_kv_row("Rotation", "(N/A)", "transform")
-        if scale:
-            self._detail_kv_row(
-                "Scale",
-                f"X={scale.get('x', 1):.3f}  Y={scale.get('y', 1):.3f}  Z={scale.get('z', 1):.3f}",
-                "transform",
-            )
-        else:
-            self._detail_kv_row("Scale", "(default 1,1,1)", "transform")
-
-        ui.Spacer(height=6)
-
-        # ── Visual / Material Section ──
-        self._detail_section_header("Visual", "visual")
-        self._detail_kv_row("Visibility", visibility, "visual")
-        self._detail_kv_row("Material Path", material or "(none)", "visual")
-
-        ui.Spacer(height=6)
-
-        # ── Hierarchy Section ──
-        self._detail_section_header("Hierarchy", "hierarchy")
-        self._detail_kv_row("Depth", str(depth), "hierarchy")
-        self._detail_kv_row("Child Count", str(child_count), "hierarchy")
-
-        ui.Spacer(height=6)
-
-        # ── Raw Properties Section (collapsible) ──
-        self._detail_section_header("Raw Properties (JSON)", "meta")
-        self._render_properties_json(props_raw)
-
-        self._set_status(
-            f"[OK] Detail: {prim_path} (Static {obj_type})"
-        )
-
-    def _render_dynamic_object_detail(self, data: dict):
-        """Render detail panel for a dynamic IoT object."""
-        obj_id = data.get("object_id", "?")
-        pos = data.get("position", {})
-        rot = data.get("rotation", {})
-        speed = data.get("speed", 0.0)
-        space_id = data.get("space_id", self._current_space_id or "?")
-        last_seen = data.get("last_seen", "N/A")
-        status = data.get("status", "unknown")
-        props_raw = data.get("properties", "{}")
-
-        status_icon = self._STATUS_ICONS.get(status, "[?]")
-        status_color = self._STATUS_COLORS.get(status, self._COLOR_GRAY)
-
-        # ── Header ──
-        with ui.VStack(spacing=2, height=0):
-            with ui.HStack(height=28, spacing=8):
-                ui.Label(
-                    f"Dynamic Object: {obj_id}",
-                    style={"color": self._COLOR_CYAN, "font_size": 16},
-                    width=ui.Fraction(4),
-                )
-                ui.Label(
-                    f"{status_icon} {status.upper()}",
-                    style={"color": status_color, "font_size": 14},
-                    alignment=ui.Alignment.RIGHT,
-                    width=ui.Fraction(1),
-                )
-            ui.Spacer(height=4)
-
-        # ── Status indicator bar ──
-        with ui.ZStack(height=6):
-            ui.Rectangle(style={"background_color": 0xFF333333, "border_radius": 3})
-            ui.Rectangle(style={"background_color": status_color, "border_radius": 3})
-        ui.Spacer(height=8)
-
-        # ── Identity Section ──
-        self._detail_section_header("Identity", "identity")
-        self._detail_kv_row("Object ID", obj_id, "identity")
-        self._detail_kv_row("Space ID", space_id, "identity")
-        self._detail_kv_row("Status", f"{status_icon} {status}", "identity")
-
-        ui.Spacer(height=6)
-
-        # ── IoT / Sensor Data Section ──
-        self._detail_section_header("IoT / Tracking Data", "iot")
-        if pos:
-            self._detail_kv_row(
-                "Position",
-                f"X={pos.get('x', 0):.3f}  Y={pos.get('y', 0):.3f}  Z={pos.get('z', 0):.3f}",
-                "iot",
-            )
-        else:
-            self._detail_kv_row("Position", "(N/A)", "iot")
-        if rot:
-            self._detail_kv_row(
-                "Rotation",
-                f"X={rot.get('x', 0):.1f}°  Y={rot.get('y', 0):.1f}°  Z={rot.get('z', 0):.1f}°",
-                "iot",
-            )
-        else:
-            self._detail_kv_row("Rotation", "(N/A)", "iot")
-        self._detail_kv_row("Speed", f"{speed:.2f} m/s", "iot")
-        self._detail_kv_row("Last Seen", str(last_seen)[:19] if last_seen else "N/A", "iot")
-
-        ui.Spacer(height=6)
-
-        # ── Raw Properties ──
-        self._detail_section_header("Properties (JSON)", "meta")
-        self._render_properties_json(props_raw)
-
-        self._set_status(
-            f"[OK] Detail: {obj_id} (Dynamic, status={status})"
-        )
-
-    # ── Detail Panel Helper Widgets ──────────────────────────────────
-
-    def _detail_section_header(self, title: str, category: str):
-        """Render a colored section header in the detail panel."""
-        color = self._DETAIL_SECTION_COLORS.get(category, self._COLOR_WHITE)
-        ui.Spacer(height=2)
-        with ui.ZStack(height=22):
-            ui.Rectangle(
-                style={
-                    "background_color": 0xFF1A1A2A,
-                    "border_radius": 3,
-                    "border_color": color,
-                    "border_width": 1,
-                },
-            )
-            ui.Label(
-                f"  {title}",
-                style={"color": color, "font_size": 13},
-            )
-        ui.Spacer(height=2)
-
-    def _detail_kv_row(self, key: str, value: str, category: str = "meta"):
-        """Render a key-value row in the detail panel."""
-        key_color = self._DETAIL_SECTION_COLORS.get(category, self._COLOR_DIM)
-        with ui.HStack(height=20, spacing=4):
-            ui.Label(
-                f"  {key}:",
-                width=ui.Fraction(2),
-                style={"color": key_color, "font_size": 12},
-            )
-            ui.Label(
-                str(value),
-                width=ui.Fraction(5),
-                style={"color": self._COLOR_WHITE, "font_size": 12},
-                word_wrap=True,
-                tooltip=str(value),  # Full value on hover for long strings
-            )
-
-    def _render_properties_json(self, raw_json: str):
-        """Parse and render a JSON properties string as indented key-value pairs.
-
-        Falls back to displaying raw text if parsing fails.
-        """
-        if not raw_json or raw_json in ("{}", "null", "None"):
-            ui.Label(
-                "  (empty)",
-                style={"color": self._COLOR_DIM, "font_size": 11},
-            )
-            return
-
-        try:
-            props = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
-        except (json.JSONDecodeError, TypeError):
-            # Show raw text if not valid JSON
-            ui.Label(
-                f"  {raw_json[:500]}",
-                style={"color": self._COLOR_DIM, "font_size": 11},
-                word_wrap=True,
-            )
-            return
-
-        if not isinstance(props, dict):
-            ui.Label(
-                f"  {str(props)[:500]}",
-                style={"color": self._COLOR_DIM, "font_size": 11},
-                word_wrap=True,
-            )
-            return
-
-        # Render up to 50 top-level keys to avoid UI slowdown
-        max_keys = 50
-        displayed = 0
-        for key, value in props.items():
-            if displayed >= max_keys:
-                ui.Label(
-                    f"  ... and {len(props) - max_keys} more properties",
-                    style={"color": self._COLOR_DIM, "font_size": 11},
-                )
-                break
-
-            # Format value: truncate long strings, pretty-print dicts/lists
-            if isinstance(value, dict):
-                val_str = json.dumps(value, ensure_ascii=False)
-                if len(val_str) > 120:
-                    val_str = val_str[:117] + "..."
-            elif isinstance(value, list):
-                val_str = json.dumps(value, ensure_ascii=False)
-                if len(val_str) > 120:
-                    val_str = val_str[:117] + "..."
-            else:
-                val_str = str(value)
-                if len(val_str) > 120:
-                    val_str = val_str[:117] + "..."
-
-            with ui.HStack(height=18, spacing=4):
-                ui.Label(
-                    f"    {key}:",
-                    width=ui.Fraction(2),
-                    style={"color": 0xFFAAAACC, "font_size": 11},
-                    tooltip=key,
-                )
-                ui.Label(
-                    val_str,
-                    width=ui.Fraction(5),
-                    style={"color": self._COLOR_DIM, "font_size": 11},
+                self._backup_status_label = ui.Label(
+                    "Status: Ready",
                     word_wrap=True,
-                    tooltip=str(value),  # Full value on hover
+                    style={"color": 0xFF88FF88, "font_size": 13},
                 )
-            displayed += 1
+
+    def _on_entity_backup(self):
+        """Full Entity backup: scan stage → hash → export USD → API call."""
+        try:
+            self._backup_status_label.text = "Status: Backing up..."
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                self._set_status("[FAIL] No active Stage.")
+                self._backup_status_label.text = "Status: Failed (no Stage)"
+                return
+
+            backup_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+            # 0. Flatten the stage to get a consistent snapshot layer
+            #    (merges all Layer overrides into composed values for USD export)
+            self._flat_layer = stage.Flatten()
+
+            # 1. Find entities (Reference/Payload boundaries)
+            #    Property extraction uses live stage (composed values via .Get())
+            entities = self._find_entities(stage)
+            if not entities:
+                self._set_status("[INFO] No entities found on Stage. Run Stage Setup first.")
+                self._backup_status_label.text = "Status: No entities found"
+                return
+
+            # 2. For each entity, collect sub-prims, compute hashes, export USD
+            entity_rows = []
+            prim_rows = []
+
+            for entity_path, info in entities.items():
+                member_prims = info["members"]
+                prim_hashes = []
+
+                for prim in member_prims:
+                    rel_path = str(prim.GetPath()).replace(entity_path, "") or "/"
+                    props = self._extract_properties(prim)
+                    props_json = json.dumps(props, sort_keys=True, default=str)
+                    prim_hash = hashlib.sha256(props_json.encode()).hexdigest()[:16]
+                    prim_hashes.append(prim_hash)
+
+                    prim_rows.append({
+                        "entity_path": entity_path,
+                        "relative_path": rel_path,
+                        "prim_type": prim.GetTypeName() or "Unknown",
+                        "properties": props_json,
+                        "prim_hash": prim_hash,
+                    })
+
+                entity_hash = hashlib.sha256(
+                    "".join(sorted(prim_hashes)).encode()
+                ).hexdigest()[:16]
+
+                # 3. Export entity subtree as USD file → MinIO
+                usd_file_path = ""
+                try:
+                    usd_file_path = self._export_and_upload_entity(
+                        stage, entity_path, backup_time
+                    )
+                except Exception as usd_exc:
+                    self._set_status(f"[WARN] USD export failed for {entity_path}: {usd_exc}")
+
+                entity_rows.append({
+                    "entity_id": str(uuid.uuid4()),
+                    "entity_path": entity_path,
+                    "entity_type": info["type"],
+                    "source_type": info["source_type"],
+                    "source_asset": info.get("source_asset", ""),
+                    "is_dynamic": False,
+                    "dynamic_table": "",
+                    "child_count": len(member_prims),
+                    "entity_hash": entity_hash,
+                    "usd_file_path": usd_file_path,
+                })
+
+            # 4. Send to API
+            payload = {
+                "backup_time": backup_time,
+                "entities": entity_rows,
+                "prim_snapshots": prim_rows,
+            }
+            result = self._api_post_json("api/v1/entities/backup", payload)
+
+            self._last_backup_time = backup_time
+            self._backup_entity_count = len(entity_rows)
+            self._backup_prim_count = len(prim_rows)
+
+            self._backup_status_label.text = (
+                f"Status: Done | Last: {backup_time[:19]}\n"
+                f"Entities: {len(entity_rows)}, Prims: {len(prim_rows)}"
+            )
+            self._set_status(
+                f"[OK] Entity Backup complete.\n"
+                f"Time: {backup_time}\n"
+                f"Entities: {len(entity_rows)}, Prims: {len(prim_rows)}\n"
+                f"API response: {result}"
+            )
+        except Exception as e:
+            self._backup_status_label.text = "Status: Failed"
+            self._set_status(f"[FAIL] Entity Backup error:\n{traceback.format_exc()}")
+
+    def _find_entities(self, stage) -> dict:
+        """Find Entity boundaries by scanning for Reference/Payload prims.
+
+        Returns {entity_path: {"type": str, "source_type": str, "source_asset": str, "members": [Prim]}}.
+        """
+        entities = {}
+        entity_paths_set = set()
+
+        # First pass: identify all prims that ARE entities (have references or payloads)
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path == "/" or not path.startswith("/World"):
+                continue
+
+            has_ref = prim.HasAuthoredReferences()
+            has_payload = prim.HasAuthoredPayloads()
+
+            if has_ref or has_payload:
+                source_type = "reference" if has_ref else "payload"
+                source_asset = ""
+                # Try to get the reference asset path
+                if has_ref:
+                    refs = prim.GetMetadata("references")
+                    if refs:
+                        prepend = refs.prependedItems if hasattr(refs, "prependedItems") else []
+                        if prepend:
+                            source_asset = str(prepend[0].assetPath) if hasattr(prepend[0], "assetPath") else ""
+
+                entities[path] = {
+                    "type": prim.GetTypeName() or "Xform",
+                    "source_type": source_type,
+                    "source_asset": source_asset,
+                    "members": [],
+                }
+                entity_paths_set.add(path)
+
+        # Second pass: assign each prim to its nearest entity ancestor
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path == "/" or not path.startswith("/World"):
+                continue
+
+            # Find nearest entity ancestor (including self)
+            nearest = None
+            for ep in entity_paths_set:
+                if path == ep or path.startswith(ep + "/"):
+                    if nearest is None or len(ep) > len(nearest):
+                        nearest = ep
+
+            if nearest and nearest in entities:
+                entities[nearest]["members"].append(prim)
+
+        # Handle inline prims (no entity ancestor) — treat as individual entities
+        for prim in stage.Traverse():
+            path = str(prim.GetPath())
+            if path == "/" or not path.startswith("/World"):
+                continue
+
+            # Check if this prim is already covered
+            covered = False
+            for ep in entity_paths_set:
+                if path == ep or path.startswith(ep + "/"):
+                    covered = True
+                    break
+
+            if not covered:
+                # Direct children of /World that aren't entities become standalone
+                parent = str(prim.GetParent().GetPath()) if prim.GetParent() else ""
+                if parent == "/World":
+                    entities[path] = {
+                        "type": prim.GetTypeName() or "Xform",
+                        "source_type": "inline",
+                        "source_asset": "",
+                        "members": [prim],
+                    }
+                    entity_paths_set.add(path)
+
+        return entities
+
+    @staticmethod
+    def _extract_properties(prim) -> dict:
+        """Extract all authored properties from a USD Prim as a dict."""
+        props = {}
+        try:
+            props["typeName"] = prim.GetTypeName()
+            for attr in prim.GetAttributes():
+                if attr.HasAuthoredValue():
+                    val = attr.Get()
+                    name = attr.GetName()
+                    # Convert USD types to JSON-serializable
+                    if val is None:
+                        props[name] = None
+                    elif hasattr(val, "__len__") and not isinstance(val, str):
+                        try:
+                            props[name] = [float(v) for v in val]
+                        except (TypeError, ValueError):
+                            props[name] = str(val)
+                    elif isinstance(val, (int, float, bool, str)):
+                        props[name] = val
+                    else:
+                        props[name] = str(val)
+        except Exception:
+            pass
+        return props
+
+    def _export_and_upload_entity(self, stage, entity_path: str, backup_time: str) -> str:
+        """Export an entity subtree as .usd file and upload to MinIO via API."""
+        # Create a temporary USD file with just this entity's subtree
+        safe_name = entity_path.strip("/").replace("/", "_")
+        ts_safe = backup_time.replace(":", "-").replace(" ", "T")[:19]
+        filename = f"{safe_name}_{ts_safe}.usd"
+
+        tmp_dir = tempfile.gettempdir()
+        tmp_path = os.path.join(tmp_dir, filename)
+
+        try:
+            # Export the subtree
+            prim = stage.GetPrimAtPath(entity_path)
+            if not prim.IsValid():
+                return ""
+
+            # Create a new stage and copy from the flattened layer
+            # (uses composed values, merging all layer overrides)
+            export_stage = Usd.Stage.CreateNew(tmp_path)
+            source_layer = getattr(self, "_flat_layer", None) or stage.GetRootLayer()
+            Sdf.CopySpec(
+                source_layer,
+                entity_path,
+                export_stage.GetRootLayer(),
+                entity_path,
+            )
+            export_stage.GetRootLayer().Save()
+
+            # Upload via API
+            result = self._api_post_file(
+                "api/v1/upload-usd",
+                tmp_path,
+                fields={"prim_path": entity_path},
+            )
+
+            s3_key = result.get("s3_key", "")
+            bucket = result.get("bucket", "")
+            return f"s3://{bucket}/{s3_key}" if s3_key else ""
+        finally:
+            # Cleanup temp file
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+    def _download_usd_from_minio(self, s3_url: str) -> str:
+        """Download a USD file from MinIO (s3://bucket/key) to a local temp file.
+
+        Returns the local file path, or empty string on failure.
+        """
+        # Parse s3://bucket/key format
+        if not s3_url.startswith("s3://"):
+            return ""
+        parts = s3_url[5:].split("/", 1)
+        if len(parts) < 2:
+            return ""
+        bucket, key = parts[0], parts[1]
+
+        # Build MinIO HTTP URL from API base URL
+        # The API base is like http://lakehouse-api:8000, MinIO is at minio:9000
+        # Use the API's upload endpoint to get S3 info, or construct MinIO URL directly
+        api_base = self._get_api_url()
+        # Replace lakehouse-api:8000 with minio:9000 for direct MinIO access
+        minio_base = api_base.replace("lakehouse-api:8000", "minio:9000").replace(
+            "localhost:8100", "localhost:9000"
+        )
+        download_url = f"{minio_base}/{bucket}/{key}"
+
+        # Download to temp file
+        safe_name = key.replace("/", "_")
+        tmp_path = os.path.join(tempfile.gettempdir(), f"restore_{safe_name}")
+
+        req = urllib.request.Request(download_url, method="GET")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            with open(tmp_path, "wb") as f:
+                f.write(resp.read())
+
+        return tmp_path
 
     # =========================================================================
-    #  HTTP Utilities (urllib — no extra packages required)
+    #  Entity Restore
+    # =========================================================================
+
+    def _create_entity_restore_frame(self):
+        frame = CollapsableFrame("Entity Restore", collapsed=False)
+        with frame:
+            with ui.VStack(style=get_style(), spacing=5, height=0):
+                ui.Label(
+                    "Select a backup time and entity to restore from Lakehouse.\n"
+                    "Click 'Load Backup Times' first, then select and restore.",
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA},
+                )
+
+                btn_load = Button(
+                    "Load Backup Times",
+                    "LOAD TIMES",
+                    tooltip="Fetch available backup timestamps from API",
+                    on_click_fn=self._on_load_backup_times,
+                )
+                self.wrapped_ui_elements.append(btn_load)
+
+                # Backup time selector
+                self._restore_time_label = ui.Label(
+                    "Backup Time: (not loaded)",
+                    style={"color": 0xFFCCCCCC, "font_size": 13},
+                )
+                with ui.HStack(height=28, spacing=4):
+                    btn_prev_time = Button(
+                        "<", "PREV",
+                        tooltip="Previous backup time",
+                        on_click_fn=self._on_prev_backup_time,
+                    )
+                    self.wrapped_ui_elements.append(btn_prev_time)
+                    btn_next_time = Button(
+                        ">", "NEXT",
+                        tooltip="Next backup time",
+                        on_click_fn=self._on_next_backup_time,
+                    )
+                    self.wrapped_ui_elements.append(btn_next_time)
+                    btn_load_ents = Button(
+                        "Load Entities",
+                        "LOAD ENTITIES",
+                        tooltip="Load entity list for selected backup time",
+                        on_click_fn=self._on_load_entities_for_restore,
+                    )
+                    self.wrapped_ui_elements.append(btn_load_ents)
+
+                # Entity selector
+                self._restore_entity_label = ui.Label(
+                    "Entity: (not loaded)",
+                    style={"color": 0xFFCCCCCC, "font_size": 13},
+                )
+                with ui.HStack(height=28, spacing=4):
+                    btn_prev_ent = Button(
+                        "<", "PREV ENT",
+                        tooltip="Previous entity",
+                        on_click_fn=self._on_prev_entity,
+                    )
+                    self.wrapped_ui_elements.append(btn_prev_ent)
+                    btn_next_ent = Button(
+                        ">", "NEXT ENT",
+                        tooltip="Next entity",
+                        on_click_fn=self._on_next_entity,
+                    )
+                    self.wrapped_ui_elements.append(btn_next_ent)
+
+                btn_restore = Button(
+                    "Restore Selected Entity",
+                    "RESTORE",
+                    tooltip="Restore entity from backup to current Stage",
+                    on_click_fn=self._on_restore_entity,
+                )
+                self.wrapped_ui_elements.append(btn_restore)
+
+    def _on_load_backup_times(self):
+        try:
+            result = self._api_get("api/v1/entities/backup-times")
+            self._backup_times_list = result.get("backup_times", [])
+            self._selected_backup_idx = 0
+            if self._backup_times_list:
+                self._restore_time_label.text = f"Backup Time: {self._backup_times_list[0]}"
+                self._set_status(f"[OK] Loaded {len(self._backup_times_list)} backup time(s).")
+            else:
+                self._restore_time_label.text = "Backup Time: (no backups found)"
+                self._set_status("[INFO] No backup times found.")
+        except Exception as e:
+            self._set_status(f"[FAIL] Load backup times error: {e}")
+
+    def _on_prev_backup_time(self):
+        if not self._backup_times_list:
+            return
+        self._selected_backup_idx = max(0, self._selected_backup_idx - 1)
+        self._restore_time_label.text = f"Backup Time: {self._backup_times_list[self._selected_backup_idx]}"
+
+    def _on_next_backup_time(self):
+        if not self._backup_times_list:
+            return
+        self._selected_backup_idx = min(len(self._backup_times_list) - 1, self._selected_backup_idx + 1)
+        self._restore_time_label.text = f"Backup Time: {self._backup_times_list[self._selected_backup_idx]}"
+
+    def _on_load_entities_for_restore(self):
+        if not self._backup_times_list:
+            self._set_status("[INFO] Load backup times first.")
+            return
+        try:
+            bt = self._backup_times_list[self._selected_backup_idx]
+            encoded_bt = urllib.request.quote(bt, safe="")
+            result = self._api_get(f"api/v1/entities/list?backup_time={encoded_bt}")
+            self._restore_entities_list = result.get("entities", [])
+            self._selected_entity_idx = 0
+            if self._restore_entities_list:
+                ep = self._restore_entities_list[0].get("entity_path", "?")
+                self._restore_entity_label.text = f"Entity: {ep}"
+                self._set_status(f"[OK] Loaded {len(self._restore_entities_list)} entity(s) at {bt}.")
+            else:
+                self._restore_entity_label.text = "Entity: (none found)"
+                self._set_status(f"[INFO] No entities at backup time {bt}.")
+        except Exception as e:
+            self._set_status(f"[FAIL] Load entities error: {e}")
+
+    def _on_prev_entity(self):
+        if not self._restore_entities_list:
+            return
+        self._selected_entity_idx = max(0, self._selected_entity_idx - 1)
+        ep = self._restore_entities_list[self._selected_entity_idx].get("entity_path", "?")
+        self._restore_entity_label.text = f"Entity: {ep}"
+
+    def _on_next_entity(self):
+        if not self._restore_entities_list:
+            return
+        self._selected_entity_idx = min(len(self._restore_entities_list) - 1, self._selected_entity_idx + 1)
+        ep = self._restore_entities_list[self._selected_entity_idx].get("entity_path", "?")
+        self._restore_entity_label.text = f"Entity: {ep}"
+
+    def _on_restore_entity(self):
+        """Restore an entity from backup: fetch data → remove current → re-add from USD."""
+        if not self._backup_times_list or not self._restore_entities_list:
+            self._set_status("[INFO] Load backup times and entities first.")
+            return
+        try:
+            bt = self._backup_times_list[self._selected_backup_idx]
+            entity_data = self._restore_entities_list[self._selected_entity_idx]
+            entity_path = entity_data.get("entity_path", "")
+            usd_file_path = entity_data.get("usd_file_path", "")
+
+            if not entity_path:
+                self._set_status("[FAIL] No entity path selected.")
+                return
+
+            stage = omni.usd.get_context().get_stage()
+            if not stage:
+                self._set_status("[FAIL] No active Stage.")
+                return
+
+            # Remove existing prim at entity_path
+            existing = stage.GetPrimAtPath(entity_path)
+            if existing.IsValid():
+                stage.RemovePrim(entity_path)
+
+            # Fetch restore data from API (entity info + prim snapshots)
+            encoded_ep = urllib.request.quote(entity_path.lstrip("/"), safe="/")
+            encoded_bt = urllib.request.quote(bt, safe="")
+            result = self._api_get(
+                f"api/v1/entities/{encoded_ep}/restore?backup_time={encoded_bt}"
+            )
+
+            entity_info = result.get("entity", {})
+            prim_snapshots = result.get("prim_snapshots", [])
+            usd_path = entity_info.get("usd_file_path", "")
+
+            # Strategy: Level 3 (USD binary) → Level 2 (source_asset ref) → Level 1 (prim snapshots)
+            restore_method = "unknown"
+
+            if usd_path and usd_path.startswith("s3://"):
+                # Level 3: Download USD from MinIO and add as local reference
+                try:
+                    local_usd = self._download_usd_from_minio(usd_path)
+                    if local_usd:
+                        prim = stage.DefinePrim(entity_path)
+                        prim.GetReferences().AddReference(local_usd)
+                        restore_method = "Level 3 (USD binary from MinIO)"
+                except Exception as dl_exc:
+                    self._set_status(
+                        f"[WARN] Level 3 USD download failed: {dl_exc}\n"
+                        f"Falling back to Level 2 restore..."
+                    )
+                    restore_method = None  # fall through to Level 2
+
+            if restore_method == "unknown":
+                # No USD path available, try Level 2
+                restore_method = None
+
+            if restore_method is None:
+                source_asset = entity_info.get("source_asset", "")
+                if source_asset:
+                    # Level 2: Restore from original Nucleus reference
+                    prim = stage.DefinePrim(entity_path)
+                    prim.GetReferences().AddReference(source_asset)
+                    restore_method = f"Level 2 (source reference: {source_asset})"
+                else:
+                    # Level 1: Recreate structure from prim snapshots
+                    for snap in prim_snapshots:
+                        rel_path = snap.get("relative_path", "/")
+                        prim_type = snap.get("prim_type", "Xform")
+                        full_path = entity_path + rel_path if rel_path != "/" else entity_path
+                        stage.DefinePrim(full_path, prim_type)
+                    restore_method = f"Level 1 (prim snapshots: {len(prim_snapshots)} prims)"
+
+            self._set_status(
+                f"[OK] Restored entity '{entity_path}':\n"
+                f"  Method: {restore_method}\n"
+                f"  Backup time: {bt}\n"
+                f"  Sub-prims in snapshot: {len(prim_snapshots)}"
+                    f"  Backup time: {bt}"
+                )
+        except Exception as e:
+            self._set_status(f"[FAIL] Restore error:\n{traceback.format_exc()}")
+
+    # =========================================================================
+    #  Sample IoT Data Generation
+    # =========================================================================
+
+    def _create_sample_iot_frame(self):
+        frame = CollapsableFrame("Dynamic IoT Test", collapsed=False)
+        with frame:
+            with ui.VStack(style=get_style(), spacing=5, height=0):
+                ui.Label(
+                    "Generate sample IoT data for Dynamic entities.\n"
+                    "Inserts random pos/speed/timestamp records into Iceberg.",
+                    word_wrap=True,
+                    style={"color": 0xFFAAAAAA},
+                )
+
+                self._iot_entity_field = StringField(
+                    "Entity Path",
+                    default_value="/World/Robots/Jetbot",
+                    tooltip="Entity path for sample IoT data",
+                    read_only=False,
+                    multiline_okay=False,
+                    on_value_changed_fn=lambda _: None,
+                )
+                self.wrapped_ui_elements.append(self._iot_entity_field)
+
+                self._iot_count_field = StringField(
+                    "Record Count",
+                    default_value="10",
+                    tooltip="Number of sample IoT records to generate",
+                    read_only=False,
+                    multiline_okay=False,
+                    on_value_changed_fn=lambda _: None,
+                )
+                self.wrapped_ui_elements.append(self._iot_count_field)
+
+                btn = Button(
+                    "Generate Sample IoT Data",
+                    "GENERATE IOT",
+                    tooltip="Send random IoT data to Lakehouse API",
+                    on_click_fn=self._on_generate_sample_iot,
+                )
+                self.wrapped_ui_elements.append(btn)
+
+    def _on_generate_sample_iot(self):
+        try:
+            entity_path = self._iot_entity_field.get_value()
+            count_str = self._iot_count_field.get_value()
+            try:
+                count = int(count_str)
+            except ValueError:
+                count = 10
+
+            payload = {
+                "entity_path": entity_path,
+                "count": count,
+            }
+            result = self._api_post_json("api/v1/dynamic/sample-ingest", payload)
+            self._set_status(
+                f"[OK] Sample IoT data generated.\n"
+                f"Entity: {entity_path}\n"
+                f"Records: {result.get('records_generated', 0)}\n"
+                f"Table: {result.get('table_name', 'N/A')}"
+            )
+        except Exception as e:
+            self._set_status(f"[FAIL] Sample IoT error:\n{traceback.format_exc()}")
+
+    # =========================================================================
+    #  HTTP Helpers (urllib — stdlib only)
     # =========================================================================
 
     def _api_get(self, endpoint: str) -> dict:
@@ -1275,328 +902,3 @@ class UIBuilder:
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read().decode("utf-8"))
-
-    # =========================================================================
-    #  USD Value -> JSON Serialization
-    # =========================================================================
-
-    def _serialize_value(self, value):
-        """Convert any USD value (Gf.Vec*, Gf.Matrix*, Vt.*Array, Sdf.AssetPath, etc.)
-        into a JSON-serializable Python object."""
-        if value is None:
-            return None
-        if isinstance(value, (bool, int, float, str)):
-            return value
-        if isinstance(value, dict):
-            return {str(k): self._serialize_value(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [self._serialize_value(v) for v in value]
-
-        # Sdf.AssetPath -> path string
-        if hasattr(value, "resolvedPath") and hasattr(value, "path"):
-            return value.path or value.resolvedPath or ""
-
-        # Sdf.ListOp types (apiSchemas, etc.) -> item list
-        if hasattr(value, "GetExplicitItems"):
-            try:
-                items = (
-                    list(value.GetExplicitItems() or [])
-                    + list(value.GetPrependedItems() or [])
-                    + list(value.GetAppendedItems() or [])
-                )
-                return [self._serialize_value(v) for v in items] if items else []
-            except Exception:
-                return str(value)
-
-        # Iterable USD types (Gf.Vec*, Gf.Matrix*, Gf.Quat*, Vt.*Array)
-        try:
-            return [self._serialize_value(v) for v in value]
-        except (TypeError, ValueError):
-            pass
-
-        return str(value)
-
-    # =========================================================================
-    #  [Task 1] All Stage Prims -> Iceberg Table A
-    # =========================================================================
-
-    def _create_iceberg_export_frame(self):
-        frame = CollapsableFrame("Task 1: Stage Prims -> Iceberg Table A", collapsed=False)
-        with frame:
-            with ui.VStack(style=get_style(), spacing=5, height=0):
-                ui.Label(
-                    "Insert all Prim paths, types, and properties from the current\n"
-                    "Stage into Iceberg static_db.table_a via the API middleware.\n"
-                    "Properties include Attributes, Relationships, and Metadata\n"
-                    "(Kind, CustomData, AssetInfo, apiSchemas, etc.).",
-                    word_wrap=True,
-                    style={"color": 0xFFAAAAAA},
-                )
-                btn = Button(
-                    "Scan & Insert to Iceberg",
-                    "SCAN & INSERT",
-                    tooltip="All Stage Prims -> API -> Iceberg Table A",
-                    on_click_fn=self._on_export_prims_to_iceberg,
-                )
-                self.wrapped_ui_elements.append(btn)
-
-    def _collect_prim_records(self):
-        """
-        Traverse all Prims in the Stage and collect prim_path / type / properties (JSON).
-
-        properties JSON structure:
-        {
-            "attributes": {
-                "<attr_name>": {"value": ..., "typeName": "<SdfValueTypeName>"},
-                ...
-            },
-            "relationships": {
-                "<rel_name>": ["/target/path", ...],
-                ...
-            },
-            "metadata": {
-                "kind": "component",
-                "active": true,
-                "customData": {...},
-                "assetInfo": {...},
-                "apiSchemas": [...],
-                ...
-            }
-        }
-        """
-        stage = omni.usd.get_context().get_stage()
-        if stage is None:
-            return None, "No Stage is currently open."
-
-        records = []
-        for prim in stage.Traverse():
-            prim_path = str(prim.GetPath())
-            prim_type = prim.GetTypeName() or "Unknown"
-            properties = {}
-
-            # ----- 1. Attributes (Transform, Visual, Geometry, Semantics, etc.) -----
-            attributes = {}
-            for attr in prim.GetAttributes():
-                attr_name = attr.GetName()
-                try:
-                    value = attr.Get()
-                    if value is None:
-                        continue
-                    attributes[attr_name] = {
-                        "value": self._serialize_value(value),
-                        "typeName": str(attr.GetTypeName()),
-                    }
-                except Exception:
-                    attributes[attr_name] = {"value": "<unreadable>", "typeName": "unknown"}
-            if attributes:
-                properties["attributes"] = attributes
-
-            # ----- 2. Relationships (material binding, proxyPrim, etc.) -----
-            relationships = {}
-            for rel in prim.GetRelationships():
-                rel_name = rel.GetName()
-                targets = rel.GetTargets()
-                relationships[rel_name] = [str(t) for t in targets]
-            if relationships:
-                properties["relationships"] = relationships
-
-            # ----- 3. Metadata (Kind, CustomData, AssetInfo, apiSchemas, etc.) -----
-            try:
-                raw_metadata = prim.GetAllMetadata()
-                metadata = {}
-                for key, val in raw_metadata.items():
-                    metadata[key] = self._serialize_value(val)
-
-                # Also add appliedSchemas as a human-readable list
-                applied = prim.GetAppliedSchemas()
-                if applied:
-                    metadata["_appliedSchemas"] = [str(s) for s in applied]
-
-                if metadata:
-                    properties["metadata"] = metadata
-            except Exception:
-                pass
-
-            records.append(
-                {
-                    "prim_path": prim_path,
-                    "type": prim_type,
-                    "properties": json.dumps(properties, ensure_ascii=False),
-                }
-            )
-
-        return records, None
-
-    def _on_export_prims_to_iceberg(self):
-        self._set_status("Scanning Stage Prims...")
-
-        records, error = self._collect_prim_records()
-        if error:
-            self._set_status(f"[ERROR] {error}")
-            return
-
-        self._set_status(f"Collected {len(records)} Prims. Sending to API...")
-
-        try:
-            result = self._api_post_json(
-                "api/v1/prims",
-                {"records": records},
-            )
-            self._set_status(
-                f"[DONE] {len(records)} records sent successfully.\n"
-                f"API response: {json.dumps(result, ensure_ascii=False)}"
-            )
-        except urllib.error.URLError as e:
-            # Local preview when API is not connected
-            preview_lines = []
-            for r in records[:3]:
-                props = json.loads(r["properties"])
-                attr_count = len(props.get("attributes", {}))
-                rel_count = len(props.get("relationships", {}))
-                meta_keys = list(props.get("metadata", {}).keys())
-                preview_lines.append(
-                    f"  {r['prim_path']} | {r['type']}\n"
-                    f"    attrs={attr_count}, rels={rel_count}, metadata={meta_keys}"
-                )
-            self._set_status(
-                f"[API NOT CONNECTED] {e}\n"
-                f"Collected records: {len(records)} (format: prim_path | type | properties JSON)\n"
-                f"-- First 3 preview --\n" + "\n".join(preview_lines)
-            )
-        except Exception as e:
-            self._set_status(f"[ERROR] {e}\n{traceback.format_exc()}")
-
-    # =========================================================================
-    #  [Task 2] /World Direct Children -> USD -> S3
-    # =========================================================================
-
-    def _create_s3_export_frame(self):
-        frame = CollapsableFrame("Task 2: /World Children -> USD -> S3", collapsed=False)
-        with frame:
-            with ui.VStack(style=get_style(), spacing=5, height=0):
-                ui.Label(
-                    "Convert each direct child Prim under /World to a USD file\n"
-                    "and upload to S3 storage via the API middleware.",
-                    word_wrap=True,
-                    style={"color": 0xFFAAAAAA},
-                )
-
-                self._local_export_dir_field = StringField(
-                    "Local Temp Path",
-                    default_value="/tmp/isaac_usd_export",
-                    tooltip="Temporary directory for exported USD files",
-                    read_only=False,
-                    multiline_okay=False,
-                    on_value_changed_fn=lambda _: None,
-                    use_folder_picker=True,
-                )
-                self.wrapped_ui_elements.append(self._local_export_dir_field)
-
-                btn = Button(
-                    "Export /World Children -> USD -> S3",
-                    "EXPORT USD -> S3",
-                    tooltip="/World direct children -> USD conversion -> API -> S3 upload",
-                    on_click_fn=self._on_export_world_children_to_s3,
-                )
-                self.wrapped_ui_elements.append(btn)
-
-    def _export_prim_to_usd(self, prim, export_dir: str, flat_layer) -> str:
-        """Export a Prim subtree to a single USD file."""
-        from pxr import Sdf, Usd, UsdGeom
-
-        prim_name = prim.GetName()
-        export_path = os.path.join(export_dir, f"{prim_name}.usd")
-
-        # Remove existing file first (Usd.Stage.CreateNew fails if file already exists)
-        if os.path.exists(export_path):
-            os.remove(export_path)
-
-        export_stage = Usd.Stage.CreateNew(export_path)
-        UsdGeom.SetStageUpAxis(export_stage, UsdGeom.Tokens.y)
-
-        root_layer = export_stage.GetRootLayer()
-        prim_path = prim.GetPath()
-
-        # Create parent Prim hierarchy (e.g. /World)
-        parent_path = prim_path.GetParentPath()
-        if str(parent_path) not in ("/", ""):
-            export_stage.DefinePrim(parent_path, "Xform")
-
-        # Copy the full Prim spec (including children) from the flattened source
-        Sdf.CopySpec(flat_layer, prim_path, root_layer, prim_path)
-
-        export_stage.GetRootLayer().Save()
-        return export_path
-
-    def _on_export_world_children_to_s3(self):
-        stage = omni.usd.get_context().get_stage()
-        if stage is None:
-            self._set_status("[ERROR] No Stage is currently open.")
-            return
-
-        world_prim = stage.GetPrimAtPath("/World")
-        if not world_prim.IsValid():
-            self._set_status("[ERROR] /World Prim not found.")
-            return
-
-        children = list(world_prim.GetChildren())
-        if not children:
-            self._set_status("[WARN] No child Prims under /World.")
-            return
-
-        export_dir = self._local_export_dir_field.get_value()
-        os.makedirs(export_dir, exist_ok=True)
-
-        self._set_status(f"Converting {len(children)} /World children to USD...")
-
-        # Flatten once for performance
-        flat_layer = stage.Flatten()
-
-        exported_files = []
-        errors = []
-        for child in children:
-            try:
-                usd_path = self._export_prim_to_usd(child, export_dir, flat_layer)
-                exported_files.append(usd_path)
-            except Exception as e:
-                errors.append(f"  {child.GetPath()}: {e}")
-
-        if errors:
-            self._set_status("[CONVERSION ERROR]\n" + "\n".join(errors))
-            return
-
-        # Upload to S3 via API
-        self._set_status(
-            f"USD conversion done ({len(exported_files)} files). Uploading to S3 via API..."
-        )
-
-        uploaded = []
-        upload_errors = []
-        for local_path in exported_files:
-            try:
-                result = self._api_post_file(
-                    "api/v1/upload-usd",
-                    local_path,
-                    fields={"prim_path": os.path.splitext(os.path.basename(local_path))[0]},
-                )
-                uploaded.append(result)
-            except urllib.error.URLError:
-                upload_errors.append(f"  {os.path.basename(local_path)}: API not connected")
-            except Exception as e:
-                upload_errors.append(f"  {os.path.basename(local_path)}: {e}")
-
-        file_names = [os.path.basename(f) for f in exported_files]
-
-        if upload_errors:
-            self._set_status(
-                f"[API NOT CONNECTED / ERROR] USD files saved locally.\n"
-                f"Path: {export_dir}\n"
-                f"Files: {file_names}\n"
-                f"Upload errors:\n" + "\n".join(upload_errors)
-            )
-        else:
-            self._set_status(
-                f"[DONE] {len(uploaded)} USD files uploaded to S3.\n"
-                f"Files: {file_names}\n"
-                f"API response: {json.dumps(uploaded, ensure_ascii=False)}"
-            )

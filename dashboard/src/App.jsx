@@ -5,6 +5,8 @@ import CongestionPage from "./pages/CongestionPage.jsx";
 import StaticPage from "./pages/StaticPage.jsx";
 import DynamicPage from "./pages/DynamicPage.jsx";
 import QueryPage from "./pages/QueryPage.jsx";
+import IcebergPage from "./pages/IcebergPage.jsx";
+import EntityDiffPage from "./pages/EntityDiffPage.jsx";
 import "./App.css";
 
 /**
@@ -24,6 +26,8 @@ export default function App() {
         <Route path="static" element={<StaticPage />} />
         <Route path="dynamic" element={<DynamicPage />} />
         <Route path="query" element={<QueryPage />} />
+        <Route path="iceberg" element={<IcebergPage />} />
+        <Route path="entity-diff" element={<EntityDiffPage />} />
         {/* Catch-all: redirect to congestion page */}
         <Route path="*" element={<CongestionPage />} />
       </Route>

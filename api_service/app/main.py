@@ -33,6 +33,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.logging import logger
 from app.core.trino_config import bootstrap_schema, check_iceberg_catalog
+from app.routers.entities import ensure_entity_tables
 
 # ---------------------------------------------------------------------------
 # Startup / shutdown lifecycle
@@ -52,6 +53,12 @@ async def lifespan(app: FastAPI):
                 "Iceberg schema bootstrap OK: %s",
                 _bootstrap_result.get("static_table"),
             )
+            # Bootstrap entity backup tables
+            try:
+                entity_result = ensure_entity_tables()
+                logger.info("Entity tables bootstrap: %s", entity_result)
+            except Exception as ent_exc:
+                logger.warning("Entity tables bootstrap issue: %s", ent_exc)
         else:
             logger.warning("Iceberg schema bootstrap issue: %s", _bootstrap_result)
     except Exception as exc:

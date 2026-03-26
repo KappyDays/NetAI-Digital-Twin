@@ -34,6 +34,18 @@ const NAV_ITEMS = [
     icon: "\u276f_",
     description: "Ad-hoc Trino SQL",
   },
+  {
+    to: "/iceberg",
+    label: "Iceberg Features",
+    icon: "\u2744",
+    description: "Apache Iceberg 10대 기능 탐색기",
+  },
+  {
+    to: "/entity-diff",
+    label: "Entity Diff",
+    icon: "\u0394",
+    description: "Entity 변경감지 3-Level 드릴다운",
+  },
 ];
 
 export default function DashboardLayout() {
