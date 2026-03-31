@@ -51,6 +51,7 @@ Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to 
 - `GET /api/v1/entities/diff?time_a=T1&time_b=T2` — Entity-level diff
 - `GET /api/v1/entities/{path}/prim-diff?time_a=T1&time_b=T2` — Prim-level diff
 - `GET /api/v1/entities/{path}/restore?backup_time=T` — Single entity restore data
+- `GET /api/v1/entities/{path}/restore-prims?backup_time=T&relative_paths=p1,p2` — Prim-level selective restore
 - `GET /api/v1/entities/restore-all?backup_time=T` — All entities restore data
 - `POST /api/v1/raw-backup/files` — Raw backup file metadata insert
 - `GET /api/v1/raw-backup/times` — Raw backup timestamps
@@ -63,6 +64,9 @@ Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to 
 **Two modes:**
 - **Task 1 (Raw Backup):** `python main.py --raw-backup --nucleus-folder <URI>` — Incremental folder backup to MinIO with Iceberg metadata tracking
 - **Task 2 (Entity Backup):** `python main.py --nucleus-path <URI>` — Extract root layer overrides from USD, store Entity/Prim snapshots in Iceberg
+
+**Combined mode:**
+- **Full Backup:** `python main.py --full-backup --nucleus-folder <URI> --nucleus-path <USD>` — Task 1 + Task 2 with shared backup_time
 
 **Dependencies:** `pxr` (OpenUSD), `omni.client` (Nucleus). Runs as subprocess to avoid DLL conflicts.
 
@@ -109,8 +113,24 @@ Web Dashboard (:3000) -> nginx -> Lakehouse API (:8100) -> Trino -> Iceberg
 ## Testing
 
 ```bash
-cd api_service && python -m pytest tests/ -v
+cd api_service && python -m pytest tests/ -v \
+  --ignore=tests/test_dynamic_object_service.py \
+  --ignore=tests/test_dynamic_objects.py \
+  --ignore=tests/test_dynamic_query_service.py
 ```
+
+> Note: `test_dynamic_*` and `test_static_query_service.py` 등 레거시 테스트는 삭제된 모듈을 참조하여 실패함 (미사용 Dynamic/Static 서비스). Entity 관련 테스트는 정상 통과.
+
+## Entity Model
+
+- **Entity boundary**: Reference/Payload composition arc 또는 `/World` 직속 Container Xform
+- **Override-only**: root layer override만 추출 (sublayer/session layer 미포함)
+- **entity_id**: `uuid5(NAMESPACE_URL, entity_path)` — deterministic, 백업 간 동일 ID
+- **entity_hash**: SHA-256(sorted sub-prim hashes)[:16] — 변경 감지용
+- **depends_on**: relationship target path에서 교차 Entity 의존성 추출
+- **중첩 Entity**: 자식 Entity 경계에서 override 수집 중단 (중복 방지)
+- **float 정규화**: `round(v, 9)` 적용 (false positive hash 방지)
+- **복원 검증**: restore 후 Stage에서 hash 재계산하여 backup hash와 비교
 
 ## Key Conventions
 
