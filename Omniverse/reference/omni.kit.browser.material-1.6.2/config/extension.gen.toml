@@ -1,0 +1,10 @@
+
+[package]
+    archivePath = "https://d4i3qtqj3r0z5.cloudfront.net/omni.kit.browser.material-1.6.2.zip"
+
+    [package.publish]
+        kitVersion = "106.5.0+release.162521.d02c707b.gl"
+        date = 1744661922
+        buildNumber = "106.4+master.2354.c26500e9.gl"
+        repoName = "kit-browsers"
+        signed = 1

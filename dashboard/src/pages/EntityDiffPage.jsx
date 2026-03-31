@@ -112,6 +112,7 @@ function JsonDiffView({ jsonA, jsonB }) {
 export default function EntityDiffPage() {
   // State
   const [backupTimes, setBackupTimes] = useState([]);
+  const [backupSources, setBackupSources] = useState([]);
   const [timeA, setTimeA] = useState("");
   const [timeB, setTimeB] = useState("");
   const [loading, setLoading] = useState(false);
@@ -134,6 +135,7 @@ export default function EntityDiffPage() {
       setError(null);
       const data = await fetchBackupTimes();
       setBackupTimes(data.backup_times || []);
+      setBackupSources(data.backup_sources || []);
       if (data.backup_times?.length >= 2) {
         setTimeA(data.backup_times[1]);
         setTimeB(data.backup_times[0]);
@@ -222,9 +224,9 @@ export default function EntityDiffPage() {
             Time A (before):
             <select value={timeA} onChange={(e) => setTimeA(e.target.value)}>
               <option value="">Select...</option>
-              {backupTimes.map((t) => (
+              {backupTimes.map((t, i) => (
                 <option key={t} value={t}>
-                  {t}
+                  {t} [{backupSources[i] || "?"}]
                 </option>
               ))}
             </select>
@@ -233,9 +235,9 @@ export default function EntityDiffPage() {
             Time B (after):
             <select value={timeB} onChange={(e) => setTimeB(e.target.value)}>
               <option value="">Select...</option>
-              {backupTimes.map((t) => (
+              {backupTimes.map((t, i) => (
                 <option key={t} value={t}>
-                  {t}
+                  {t} [{backupSources[i] || "?"}]
                 </option>
               ))}
             </select>
@@ -252,6 +254,23 @@ export default function EntityDiffPage() {
       </div>
 
       {error && <div className="diff-error">{error}</div>}
+
+      {/* Cross-source warning */}
+      {timeA && timeB && (() => {
+        const idxA = backupTimes.indexOf(timeA);
+        const idxB = backupTimes.indexOf(timeB);
+        const srcA = backupSources[idxA];
+        const srcB = backupSources[idxB];
+        if (srcA && srcB && srcA !== srcB) {
+          return (
+            <div className="diff-warning">
+              Source mismatch: Time A [{srcA}] vs Time B [{srcB}].
+              Extension과 Nucleus/Local 백업은 속성 추출 방식이 달라 비교 결과가 부정확할 수 있습니다.
+            </div>
+          );
+        }
+        return null;
+      })()}
 
       {/* ── Breadcrumb ─────────────────────────────────────────── */}
       {(selectedEntity || selectedPrim) && (
@@ -443,6 +462,15 @@ export default function EntityDiffPage() {
           border-radius: 4px;
           margin-bottom: 12px;
           border-left: 3px solid #f44336;
+        }
+        .diff-warning {
+          background: #3a3a1a;
+          color: #ffcc66;
+          padding: 10px 14px;
+          border-radius: 4px;
+          margin-bottom: 12px;
+          border-left: 3px solid #ff9800;
+          font-size: 0.9em;
         }
         .diff-breadcrumb {
           display: flex;

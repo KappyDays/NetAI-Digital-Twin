@@ -7,6 +7,7 @@ import DynamicPage from "./pages/DynamicPage.jsx";
 import QueryPage from "./pages/QueryPage.jsx";
 import IcebergPage from "./pages/IcebergPage.jsx";
 import EntityDiffPage from "./pages/EntityDiffPage.jsx";
+import RawBackupPage from "./pages/RawBackupPage.jsx";
 import "./App.css";
 
 /**
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="query" element={<QueryPage />} />
         <Route path="iceberg" element={<IcebergPage />} />
         <Route path="entity-diff" element={<EntityDiffPage />} />
+        <Route path="raw-backup" element={<RawBackupPage />} />
         {/* Catch-all: redirect to congestion page */}
         <Route path="*" element={<CongestionPage />} />
       </Route>

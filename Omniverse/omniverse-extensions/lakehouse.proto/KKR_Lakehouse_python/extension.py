@@ -62,18 +62,26 @@ class Extension(omni.ext.IExt):
         )
         self._window.set_visibility_changed_fn(self._on_window)
 
+        # Register menu under Tools > KKR-Tools with checkmark toggle
+        self._ext_id = ext_id
+        self._action_name = f"ToggleWindow:{EXTENSION_TITLE}"
         action_registry = omni.kit.actions.core.get_action_registry()
         action_registry.register_action(
             ext_id,
-            f"CreateUIExtension:{EXTENSION_TITLE}",
+            self._action_name,
             self._menu_callback,
-            description=f"Add {EXTENSION_TITLE} Extension to UI toolbar",
+            description=f"Toggle {EXTENSION_TITLE} window",
         )
         self._menu_items = [
-            MenuItemDescription(name=EXTENSION_TITLE, onclick_action=(ext_id, f"CreateUIExtension:{EXTENSION_TITLE}"))
+            MenuItemDescription(
+                name=EXTENSION_TITLE,
+                ticked=True,
+                ticked_fn=lambda: self._window.visible if self._window else False,
+                onclick_action=(ext_id, self._action_name),
+            )
         ]
-
-        add_menu_items(self._menu_items, EXTENSION_TITLE)
+        self._menu_items = [MenuItemDescription(name="KKR-Tools", sub_menu=self._menu_items)]
+        add_menu_items(self._menu_items, "Tools")
 
         # Filled in with User Functions
         self.ui_builder = UIBuilder()
@@ -86,11 +94,10 @@ class Extension(omni.ext.IExt):
         self._timeline = omni.timeline.get_timeline_interface()
 
     def on_shutdown(self):
-        self._models = {}
-        remove_menu_items(self._menu_items, EXTENSION_TITLE)
+        remove_menu_items(self._menu_items, "Tools")
 
         action_registry = omni.kit.actions.core.get_action_registry()
-        action_registry.deregister_action(self.ext_id, f"CreateUIExtension:{EXTENSION_TITLE}")
+        action_registry.deregister_action(self._ext_id, self._action_name)
 
         if self._window:
             self._window = None

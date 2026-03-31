@@ -1,0 +1,956 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (500, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (-1.7934890575093978, 11.595969663750813, 6.982406671602313)
+                double3 target = (-1.6246047818571778, 8.951134571217024, 5.582164908966968)
+            }
+            dictionary Right = {
+                double3 position = (0, -500, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 500)
+                double radius = 5
+            }
+            string boundCamera = "/OmniverseKit_Persp"
+        }
+        dictionary metricsAssembler = {
+            int version = 1
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./scene.usd"
+        }
+        dictionary renderSettings = {
+        }
+    }
+    defaultPrim = "World"
+    endTimeCode = 0
+    startTimeCode = -1
+    upAxis = "Z"
+)
+
+def "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    def "OmniverseKit"
+    {
+        def "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </OmniverseKit_Persp>
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:dlss:frameGeneration = 0
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                bool omni:rtx:material:db:syncLoads = 1
+                token omni:rtx:post:dlss:execMode = "performance"
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
+                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                bool omni:rtx:scene:hydra:materialSyncLoads = 1
+                bool omni:rtx:scene:hydra:mdlMaterialWarmup = 1
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1920, 1080)
+            }
+        }
+    }
+
+    def RenderSettings "OmniverseGlobalRenderSettings" (
+        prepend apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
+        no_delete = true
+    )
+    {
+        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
+    }
+
+    def "Vars"
+    {
+        def RenderVar "LdrColor" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+}
+
+def Xform "World"
+{
+    def Xform "Environment"
+    {
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0.6079973906098712, -0.7722283928337776, 0.03316093410335852)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "Grid" (
+            prepend references = @./entities/default_environment.usd@
+        )
+        {
+        }
+
+        def "Table" (
+            prepend references = @./entities/table_instanceable.usd@
+        )
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0.8915452439509831)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+    }
+
+    def Xform "Robots"
+    {
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-1.7000207062787616, 0.031730101227914975, 0.6540318692236291)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "Jetbot" (
+            prepend references = @./entities/jetbot.usd@
+        )
+        {
+            string isaac:namespace (
+                displayName = "Namespace"
+                doc = "Namespace of the prim in Isaac Sim"
+            )
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (1.1820570702533941, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def "Kaya" (
+            prepend references = @./entities/kaya.usd@
+        )
+        {
+        }
+    }
+
+    def Xform "Props"
+    {
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (10, 10, 10)
+        double3 xformOp:translate = (0.24646116124600018, 2.606228593130456, 0.3199137730384839)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "Block_A" (
+            prepend references = @./entities/basic_block.usd@
+        )
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-0.4231129710049355, -0.5975381700598226, 3.5388358909926865e-16)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def "Block_B" (
+            prepend references = @./entities/basic_block.usd@
+        )
+        {
+        }
+    }
+
+    def Xform "Kt"
+    {
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-0.9658030343288555, -5.045988899137612, -2.6645352591003757e-15)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        def "anymal" (
+            prepend payload = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/ANYbotics/anymal_c/legacy/anymal.usd@
+        )
+        {
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:scale:unitsResolve = (1, 1, 1)
+            double3 xformOp:translate = (0, 2.7507955715588572, 0.6782946253170933)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale", "xformOp:scale:unitsResolve"]
+
+            over "base"
+            {
+                float3 physics:diagonalInertia = (179.38806, 3708.8774, 3724.9766)
+                float physics:mass = 6.222
+
+                over "base_LF_HAA"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_LH_HAA"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_RF_HAA"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_RH_HAA"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_battery"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_bottom_shell"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_face_front"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_face_rear"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_handle"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_hatch"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_remote"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_to_depth_camera_left_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_to_depth_camera_right_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_to_docking_hatch_cover"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_to_lidar_cage"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "base_top_shell"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "imu_joint"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_HAA"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LF_HAA"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_HIP"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LF_HIP_LF_hip_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_hip_fixed"
+            {
+                float3 physics:diagonalInertia = (13.93106, 37.98579, 38.97509)
+                float physics:mass = 0.74
+
+                over "LF_hip_fixed_LF_HFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_HFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LF_HFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_THIGH"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LF_THIGH_LF_thigh_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_thigh_fixed"
+            {
+                float3 physics:diagonalInertia = (186.44469, 193.12599, 28.383612)
+                float physics:mass = 1.03
+
+                over "LF_thigh_fixed_LF_KFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_KFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LF_KFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_SHANK"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LF_shank_LF_shank_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_shank_fixed"
+            {
+                float3 physics:diagonalInertia = (3.2748005, 11.097411, 8.938852)
+                float physics:mass = 0.33742
+
+                over "LF_shank_fixed_LF_FOOT"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LF_FOOT"
+            {
+                float3 physics:diagonalInertia = (31.717411, 31.717411, 0.8319196)
+                float physics:mass = 0.25
+            }
+
+            over "LH_HAA"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LH_HAA"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_HIP"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LH_HIP_LH_hip_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_hip_fixed"
+            {
+                float3 physics:diagonalInertia = (13.93106, 37.98579, 38.97509)
+                float physics:mass = 0.74
+
+                over "LH_hip_fixed_LH_HFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_HFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LH_HFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_THIGH"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LH_THIGH_LH_thigh_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_thigh_fixed"
+            {
+                float3 physics:diagonalInertia = (186.44469, 193.12599, 28.383612)
+                float physics:mass = 1.03
+
+                over "LH_thigh_fixed_LH_KFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_KFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "LH_KFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_SHANK"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "LH_shank_LH_shank_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_shank_fixed"
+            {
+                float3 physics:diagonalInertia = (3.2748005, 11.097411, 8.938852)
+                float physics:mass = 0.33742
+
+                over "LH_shank_fixed_LH_FOOT"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "LH_FOOT"
+            {
+                float3 physics:diagonalInertia = (31.717411, 31.717411, 0.8319196)
+                float physics:mass = 0.25
+            }
+
+            over "RF_HAA"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RF_HAA"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_HIP"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RF_HIP_RF_hip_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_hip_fixed"
+            {
+                float3 physics:diagonalInertia = (13.93106, 37.98579, 38.97509)
+                float physics:mass = 0.74
+
+                over "RF_hip_fixed_RF_HFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_HFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RF_HFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_THIGH"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RF_THIGH_RF_thigh_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_thigh_fixed"
+            {
+                float3 physics:diagonalInertia = (186.44469, 193.12599, 28.383612)
+                float physics:mass = 1.03
+
+                over "RF_thigh_fixed_RF_KFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_KFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RF_KFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_SHANK"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RF_shank_RF_shank_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_shank_fixed"
+            {
+                float3 physics:diagonalInertia = (3.2748005, 11.097411, 8.938852)
+                float physics:mass = 0.33742
+
+                over "RF_shank_fixed_RF_FOOT"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RF_FOOT"
+            {
+                float3 physics:diagonalInertia = (31.717411, 31.717411, 0.8319196)
+                float physics:mass = 0.25
+            }
+
+            over "RH_HAA"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RH_HAA"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_HIP"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RH_HIP_RH_hip_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_hip_fixed"
+            {
+                float3 physics:diagonalInertia = (13.93106, 37.98579, 38.97509)
+                float physics:mass = 0.74
+
+                over "RH_hip_fixed_RH_HFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_HFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RH_HFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_THIGH"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RH_THIGH_RH_thigh_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_thigh_fixed"
+            {
+                float3 physics:diagonalInertia = (186.44469, 193.12599, 28.383612)
+                float physics:mass = 1.03
+
+                over "RH_thigh_fixed_RH_KFE"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_KFE"
+            {
+                float3 physics:diagonalInertia = (10.53013, 18.05509, 17.65827)
+                float physics:mass = 2.04
+
+                over "RH_KFE"
+                {
+                    float drive:angular:physics:damping = 0
+                    float drive:angular:physics:maxForce = 800000
+                    float drive:angular:physics:stiffness = 0
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_SHANK"
+            {
+                float3 physics:diagonalInertia = (0.01, 0.01, 0.01)
+                float physics:mass = 0.001
+
+                over "RH_shank_RH_shank_fixed"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_shank_fixed"
+            {
+                float3 physics:diagonalInertia = (3.2748005, 11.097411, 8.938852)
+                float physics:mass = 0.33742
+
+                over "RH_shank_fixed_RH_FOOT"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "RH_FOOT"
+            {
+                float3 physics:diagonalInertia = (31.717411, 31.717411, 0.8319196)
+                float physics:mass = 0.25
+            }
+
+            over "battery"
+            {
+                float3 physics:diagonalInertia = (74.94748, 722.3389, 748.2717)
+                float physics:mass = 5.53425
+            }
+
+            over "bottom_shell"
+            {
+                float3 physics:diagonalInertia = (92.73537, 613.43884, 685.35315)
+                float physics:mass = 1.15
+            }
+
+            over "face_front"
+            {
+                float3 physics:diagonalInertia = (52.38611, 26.430979, 43.25938)
+                float physics:mass = 0.73
+
+                over "face_front_to_depth_camera_front_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "face_front_to_wide_angle_camera_front_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "depth_camera_front_camera"
+            {
+                float3 physics:diagonalInertia = (6.37051, 9.29402, 4.84569)
+                float physics:mass = 0.16043
+            }
+
+            over "wide_angle_camera_front_camera"
+            {
+                float3 physics:diagonalInertia = (5.5923204, 9.46504, 4.93052)
+                float physics:mass = 0.287
+            }
+
+            over "face_rear"
+            {
+                float3 physics:diagonalInertia = (52.38611, 26.430979, 43.25938)
+                float physics:mass = 0.73
+
+                over "face_rear_to_depth_camera_rear_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+
+                over "face_rear_to_wide_angle_camera_rear_camera"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "depth_camera_rear_camera"
+            {
+                float3 physics:diagonalInertia = (6.37051, 9.29402, 4.84569)
+                float physics:mass = 0.16043
+            }
+
+            over "wide_angle_camera_rear_camera"
+            {
+                float3 physics:diagonalInertia = (5.5923204, 9.46504, 4.93052)
+                float physics:mass = 0.287
+            }
+
+            over "handle"
+            {
+                float3 physics:diagonalInertia = (15.25739, 7.1584, 11.64779)
+                float physics:mass = 0.314
+            }
+
+            over "hatch"
+            {
+                float3 physics:diagonalInertia = (10, 10, 10)
+                float physics:mass = 0.142
+            }
+
+            over "remote"
+            {
+                float3 physics:diagonalInertia = (5.2848597, 11.65035, 12.402599)
+                float physics:mass = 0.3262
+            }
+
+            over "depth_camera_left_camera"
+            {
+                float3 physics:diagonalInertia = (6.37051, 9.29402, 4.84569)
+                float physics:mass = 0.16043
+            }
+
+            over "depth_camera_right_camera"
+            {
+                float3 physics:diagonalInertia = (6.37051, 9.29402, 4.84569)
+                float physics:mass = 0.16043
+            }
+
+            over "docking_hatch_cover"
+            {
+                float3 physics:diagonalInertia = (6.3283, 11.097099, 17.1883)
+                float physics:mass = 0.065
+            }
+
+            over "lidar_cage"
+            {
+                float3 physics:diagonalInertia = (31.56254, 23.57216, 13.26455)
+                float physics:mass = 0.545
+
+                over "lidar_cage_to_lidar"
+                {
+                    float physics:breakForce = inf
+                    float physics:breakTorque = inf
+                }
+            }
+
+            over "lidar"
+            {
+                float3 physics:diagonalInertia = (8.46765, 13.675831, 13.63673)
+                float physics:mass = 0.695
+            }
+
+            over "top_shell"
+            {
+                float3 physics:diagonalInertia = (66.47895, 258.73923, 315.23038)
+                float physics:mass = 0.534
+            }
+
+            over "imu_link"
+            {
+                float3 physics:diagonalInertia = (0.005633333, 0.0095999995, 0.005633333)
+                float physics:mass = 0.01
+            }
+        }
+
+        def "anymal_simplified_physics" (
+            prepend payload = @https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/ANYbotics/anymal_b/configuration/anymal_simplified_physics.usd@
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-1.860116958618164, 2.121466636657715, 0.6020812131044332)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def "anymal_mine" (
+            prepend payload = @./anymal.usd@
+        )
+        {
+            quatf xformOp:orient = (1, 0, 0, 0)
+            float3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-0.570089213824831, 5.603278499509926, 0.5879506078472982)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+    }
+}
+

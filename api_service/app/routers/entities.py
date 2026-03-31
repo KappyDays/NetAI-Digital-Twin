@@ -8,6 +8,7 @@ Endpoints:
     GET  /api/v1/entities/backup-times   — List available backup timestamps
     GET  /api/v1/entities/{path}/prim-diff   — Compare sub-prims for an entity
     GET  /api/v1/entities/{path}/restore     — Get restore data for an entity
+    GET  /api/v1/entities/restore-all    — Get ALL entities + prims at a backup time
     POST /api/v1/dynamic/sample-ingest   — Generate sample IoT data
 """
 
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.entities (
     child_count INTEGER,
     entity_hash VARCHAR,
     usd_file_path VARCHAR,
+    backup_source VARCHAR,
     backup_time TIMESTAMP(6)
 ) WITH (
     partitioning = ARRAY['day(backup_time)']
@@ -121,7 +123,7 @@ async def backup_entities(req: EntityBackupRequest):
 
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
-    backup_ts = req.backup_time
+    backup_ts = _validate_timestamp(req.backup_time)
 
     entities_inserted = 0
     prims_inserted = 0
@@ -136,6 +138,7 @@ async def backup_entities(req: EntityBackupRequest):
                     f"'{_esc(e.source_type)}', '{_esc(e.source_asset)}', "
                     f"{str(e.is_dynamic).lower()}, '{_esc(e.dynamic_table)}', "
                     f"{e.child_count}, '{_esc(e.entity_hash)}', '{_esc(e.usd_file_path)}', "
+                    f"'{_esc(req.backup_source)}', "
                     f"TIMESTAMP '{_esc(backup_ts)}')"
                 )
                 values_rows.append(row)
@@ -143,7 +146,8 @@ async def backup_entities(req: EntityBackupRequest):
             sql = (
                 f"INSERT INTO {catalog}.{ns}.entities "
                 f"(entity_id, entity_path, entity_type, source_type, source_asset, "
-                f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, backup_time) "
+                f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, "
+                f"backup_source, backup_time) "
                 f"VALUES {', '.join(values_rows)}"
             )
             try:
@@ -197,13 +201,16 @@ async def get_backup_times():
 
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
-            f"SELECT DISTINCT backup_time FROM {catalog}.{ns}.entities "
+            f"SELECT backup_time, COALESCE(MAX(backup_source), 'extension') as src "
+            f"FROM {catalog}.{ns}.entities "
+            f"GROUP BY backup_time "
             f"ORDER BY backup_time DESC"
         )
         rows = cursor.fetchall()
 
     times = [row[0].isoformat() if hasattr(row[0], "isoformat") else str(row[0]) for row in rows]
-    return BackupTimesResponse(backup_times=times)
+    sources = [row[1] if row[1] else "extension" for row in rows]
+    return BackupTimesResponse(backup_times=times, backup_sources=sources)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -393,6 +400,66 @@ async def prim_diff(
         added=added, removed=removed, changed=changed, unchanged=unchanged,
         prims=items,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GET /entities/restore-all
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/entities/restore-all")
+async def restore_all(
+    backup_time: str = Query(..., description="Backup timestamp to restore from"),
+):
+    """Return ALL entities and ALL prim_snapshots at a given backup time.
+
+    Used by the Time Travel Extension for Stage-wide restore in a single API call.
+    """
+    backup_time = _validate_timestamp(backup_time)
+    ensure_entity_tables()
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+
+    # 1. Fetch all entities at this backup time
+    with trino_cursor(schema=ns) as cursor:
+        cursor.execute(
+            f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
+            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path "
+            f"FROM {catalog}.{ns}.entities "
+            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}'"
+        )
+        e_cols = [desc[0] for desc in cursor.description]
+        e_rows = cursor.fetchall()
+
+    entities = []
+    for row in e_rows:
+        entity = dict(zip(e_cols, row))
+        for k, v in entity.items():
+            if hasattr(v, "isoformat"):
+                entity[k] = v.isoformat()
+        entities.append(entity)
+
+    # 2. Fetch all prim_snapshots at this backup time
+    with trino_cursor(schema=ns) as cursor:
+        cursor.execute(
+            f"SELECT entity_path, relative_path, prim_type, properties, prim_hash "
+            f"FROM {catalog}.{ns}.prim_snapshots "
+            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}'"
+        )
+        p_cols = [desc[0] for desc in cursor.description]
+        p_rows = cursor.fetchall()
+
+    prim_snapshots = []
+    for row in p_rows:
+        snap = dict(zip(p_cols, row))
+        prim_snapshots.append(snap)
+
+    return {
+        "backup_time": backup_time,
+        "entity_count": len(entities),
+        "prim_count": len(prim_snapshots),
+        "entities": entities,
+        "prim_snapshots": prim_snapshots,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════

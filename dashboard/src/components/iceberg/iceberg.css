@@ -1,0 +1,192 @@
+/* ── Iceberg Features Styles ─────────────────────────────────── */
+
+.iceberg-hub { padding: 0 4px; }
+
+.iceberg-hub-header {
+  text-align: center;
+  margin-bottom: 24px;
+  padding: 20px;
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+  border-radius: 12px;
+}
+.iceberg-hub-header h2 { color: #e0f2fe; margin: 0 0 8px; font-size: 1.5rem; }
+.iceberg-hub-icon { font-size: 1.8rem; vertical-align: middle; }
+.iceberg-hub-subtitle { color: #94a3b8; margin: 0; font-size: 0.9rem; }
+
+/* ── Card Grid ──────────────────────────────────────────────── */
+.iceberg-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.iceberg-card {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 20px 14px; border: 1px solid #334155; border-radius: 10px;
+  background: linear-gradient(145deg, #1e293b, #0f172a);
+  cursor: pointer; transition: all 0.2s;
+  text-align: center; color: #e2e8f0;
+}
+.iceberg-card:hover { transform: scale(1.03); box-shadow: 0 4px 20px rgba(56,189,248,0.2); border-color: #38bdf8; }
+.iceberg-card-active { border-color: #38bdf8; background: linear-gradient(145deg, #1e3a5f, #0f172a); }
+.iceberg-card-icon { font-size: 2rem; margin-bottom: 8px; }
+.iceberg-card-title { font-weight: 600; font-size: 0.95rem; margin-bottom: 4px; }
+.iceberg-card-desc { font-size: 0.75rem; color: #94a3b8; line-height: 1.3; }
+
+/* ── Feature Detail ─────────────────────────────────────────── */
+.iceberg-detail { animation: fadeIn 0.2s ease; }
+.iceberg-back-btn {
+  background: none; border: 1px solid #475569; color: #94a3b8;
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; margin-bottom: 12px;
+}
+.iceberg-back-btn:hover { border-color: #38bdf8; color: #38bdf8; }
+.iceberg-detail-title { color: #e0f2fe; font-size: 1.2rem; margin: 0 0 16px; }
+.iceberg-feature { display: flex; flex-direction: column; gap: 12px; }
+.iceberg-section { margin: 8px 0; }
+.iceberg-section h4 { color: #cbd5e1; margin: 0 0 8px; font-size: 0.9rem; }
+
+/* ── Info Panel ─────────────────────────────────────────────── */
+.iceberg-info-panel { margin-bottom: 8px; }
+.iceberg-info-toggle {
+  background: #1e293b; border: 1px solid #334155; color: #94a3b8;
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 0.8rem; width: 100%; text-align: left;
+}
+.iceberg-info-toggle:hover { border-color: #38bdf8; color: #e0f2fe; }
+.iceberg-info-body {
+  background: #0f172a; border: 1px solid #1e3a5f; border-radius: 0 0 6px 6px;
+  padding: 12px; margin-top: -1px;
+}
+.iceberg-info-desc { color: #cbd5e1; font-size: 0.85rem; margin: 0 0 8px; line-height: 1.5; }
+.iceberg-info-sql {
+  background: #020617; color: #38bdf8; padding: 10px; border-radius: 4px;
+  font-size: 0.78rem; overflow-x: auto; white-space: pre;
+}
+.iceberg-info-ref { color: #64748b; font-size: 0.75rem; margin: 6px 0 0; }
+
+/* ── Forms ──────────────────────────────────────────────────── */
+.iceberg-form-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.iceberg-form-row input, .iceberg-form-row select {
+  background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
+  padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
+}
+.iceberg-form-row input:focus, .iceberg-form-row select:focus { border-color: #38bdf8; outline: none; }
+.iceberg-form-row label { color: #94a3b8; font-size: 0.85rem; }
+.iceberg-form-row span { color: #64748b; }
+
+/* ── Buttons ────────────────────────────────────────────────── */
+.iceberg-btn {
+  background: #1e3a5f; border: 1px solid #38bdf8; color: #e0f2fe;
+  padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+  transition: background 0.15s;
+}
+.iceberg-btn:hover { background: #2563eb; }
+.iceberg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.iceberg-btn-danger { border-color: #ef4444; color: #fca5a5; }
+.iceberg-btn-danger:hover { background: #7f1d1d; }
+.iceberg-btn-sm { font-size: 0.75rem; padding: 3px 8px; background: #1e293b; border: 1px solid #475569; color: #94a3b8; border-radius: 4px; cursor: pointer; }
+.iceberg-btn-sm:hover { border-color: #38bdf8; }
+
+/* ── Tabs ───────────────────────────────────────────────────── */
+.iceberg-tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid #334155; padding-bottom: 0;
+}
+.iceberg-tabs button {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: #94a3b8; padding: 6px 14px; cursor: pointer; font-size: 0.85rem;
+}
+.iceberg-tabs button:hover { color: #e0f2fe; }
+.iceberg-tabs button.active { color: #38bdf8; border-bottom-color: #38bdf8; }
+
+/* ── Table ──────────────────────────────────────────────────── */
+.iceberg-table-wrap { border: 1px solid #334155; border-radius: 6px; overflow: auto; }
+.iceberg-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.iceberg-th { background: #1e293b; color: #94a3b8; padding: 6px 10px; text-align: left; white-space: nowrap; border-bottom: 1px solid #334155; position: sticky; top: 0; }
+.iceberg-td { padding: 5px 10px; color: #cbd5e1; border-bottom: 1px solid #1e293b; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iceberg-td-num { color: #475569; width: 30px; text-align: right; }
+.iceberg-tr-even { background: #0f172a22; }
+.iceberg-row-count { text-align: right; color: #64748b; font-size: 0.75rem; padding: 4px 10px; }
+.iceberg-null { color: #475569; font-style: italic; }
+.iceberg-ddl { background: #020617; color: #a5b4fc; padding: 10px; border-radius: 4px; font-size: 0.78rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; max-height: 200px; }
+
+/* ── Table Selector ─────────────────────────────────────────── */
+.iceberg-table-selector { display: flex; align-items: center; gap: 8px; }
+.iceberg-table-selector label { color: #94a3b8; font-size: 0.85rem; font-weight: 600; }
+.iceberg-table-selector select { background: #1e293b; border: 1px solid #475569; color: #e2e8f0; padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; min-width: 260px; }
+
+/* ── Status Messages ────────────────────────────────────────── */
+.iceberg-error { background: #450a0a; color: #fca5a5; padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; border: 1px solid #7f1d1d; }
+.iceberg-success { background: #052e16; color: #86efac; padding: 8px 12px; border-radius: 6px; font-size: 0.85rem; border: 1px solid #166534; }
+.iceberg-loading { color: #38bdf8; padding: 12px; text-align: center; }
+.iceberg-empty { color: #64748b; padding: 12px; text-align: center; }
+.iceberg-hint { color: #64748b; font-size: 0.8rem; font-style: italic; }
+
+/* ── Timeline ───────────────────────────────────────────────── */
+.iceberg-timeline { display: flex; flex-direction: column; gap: 0; padding-left: 16px; border-left: 2px solid #334155; margin: 8px 0; }
+.iceberg-timeline-item { display: flex; align-items: flex-start; gap: 12px; padding: 8px 0; cursor: pointer; position: relative; }
+.iceberg-timeline-item:hover { background: #1e293b33; }
+.iceberg-timeline-dot { width: 10px; height: 10px; background: #38bdf8; border-radius: 50%; margin-top: 4px; flex-shrink: 0; position: relative; left: -22px; }
+.iceberg-timeline-content { display: flex; flex-direction: column; gap: 2px; margin-left: -10px; }
+.iceberg-timeline-content strong { color: #e0f2fe; font-size: 0.8rem; }
+.iceberg-timeline-date { color: #64748b; font-size: 0.75rem; }
+.iceberg-timeline-op { color: #38bdf8; font-size: 0.7rem; text-transform: uppercase; }
+
+/* ── Compare Grid ───────────────────────────────────────────── */
+.iceberg-compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.iceberg-compare-grid h4 { color: #94a3b8; margin: 0 0 4px; font-size: 0.85rem; }
+.iceberg-compare-selectors { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+
+/* ── Stat Cards ─────────────────────────────────────────────── */
+.iceberg-stat-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; text-align: center; }
+.iceberg-stat-card-success { border-color: #166534; background: #052e16; }
+.iceberg-stat-value { font-size: 1.6rem; font-weight: 700; color: #e0f2fe; }
+.iceberg-stat-label { color: #94a3b8; font-size: 0.8rem; }
+.iceberg-stat-diff { color: #86efac; font-size: 0.85rem; font-weight: 600; margin-top: 4px; }
+
+/* ── Tags ───────────────────────────────────────────────────── */
+.iceberg-tag-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.iceberg-tag { background: #1e293b; border: 1px solid #475569; color: #38bdf8; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; font-family: monospace; }
+.iceberg-tag:hover { background: #1e3a5f; border-color: #38bdf8; }
+
+/* ── Transform Cards (Hidden Partitioning) ──────────────────── */
+.iceberg-transform-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 10px; }
+.iceberg-transform-card { background: #1e293b; border-left: 3px solid; border-radius: 6px; padding: 12px; }
+.iceberg-transform-name { font-family: monospace; font-weight: 600; font-size: 0.9rem; }
+.iceberg-transform-desc { color: #94a3b8; font-size: 0.8rem; margin: 4px 0; }
+.iceberg-transform-example { background: #020617; color: #a5b4fc; padding: 6px; border-radius: 3px; font-size: 0.75rem; margin: 4px 0 0; }
+
+/* ── COW vs MOR Visual ──────────────────────────────────────── */
+.iceberg-cow-mor-visual { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.iceberg-mode-card { background: #1e293b; border: 2px solid #334155; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; }
+.iceberg-mode-card:hover { border-color: #38bdf8; }
+.iceberg-mode-active { border-color: #38bdf8; background: #1e3a5f; box-shadow: 0 0 12px rgba(56,189,248,0.15); }
+.iceberg-mode-card h4 { color: #e0f2fe; margin: 0 0 10px; }
+.iceberg-mode-card ul { color: #94a3b8; font-size: 0.8rem; padding-left: 16px; margin: 8px 0 0; }
+.iceberg-mode-diagram { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.iceberg-mode-step { background: #0f172a; padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; color: #cbd5e1; }
+.iceberg-mode-arrow { color: #64748b; }
+.iceberg-mode-rewrite { border: 1px solid #f59e0b; color: #fbbf24; }
+.iceberg-mode-delete { border: 1px solid #22d3ee; color: #67e8f9; }
+
+/* ── ACID Cards ─────────────────────────────────────────────── */
+.iceberg-acid-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.iceberg-acid-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 14px; }
+.iceberg-acid-letter { font-size: 1.2rem; font-weight: 700; color: #38bdf8; }
+.iceberg-acid-card h4 { color: #e0f2fe; margin: 6px 0 4px; font-size: 0.9rem; }
+.iceberg-acid-card p { color: #94a3b8; font-size: 0.8rem; margin: 0; line-height: 1.4; }
+
+/* ── OCC Diagram ────────────────────────────────────────────── */
+.iceberg-occ-diagram { display: flex; flex-direction: column; gap: 6px; padding: 12px; background: #0f172a; border-radius: 6px; }
+.iceberg-occ-step { display: flex; align-items: center; gap: 10px; font-size: 0.82rem; color: #cbd5e1; }
+.iceberg-occ-num { width: 22px; height: 22px; background: #1e3a5f; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #38bdf8; font-weight: 700; font-size: 0.75rem; flex-shrink: 0; }
+
+/* ── Z-order Visual ─────────────────────────────────────────── */
+.iceberg-zorder-visual { display: flex; align-items: center; gap: 20px; justify-content: center; padding: 12px; }
+.iceberg-zorder-before, .iceberg-zorder-after { text-align: center; }
+.iceberg-zorder-before h5, .iceberg-zorder-after h5 { color: #94a3b8; margin: 0 0 6px; font-size: 0.8rem; }
+.iceberg-zorder-arrow { font-size: 1.5rem; color: #38bdf8; }
+.iceberg-grid-demo { display: grid; grid-template-columns: repeat(4, 28px); gap: 3px; }
+.iceberg-grid-cell { width: 28px; height: 28px; border-radius: 3px; }
+
+/* ── Animation ──────────────────────────────────────────────── */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }

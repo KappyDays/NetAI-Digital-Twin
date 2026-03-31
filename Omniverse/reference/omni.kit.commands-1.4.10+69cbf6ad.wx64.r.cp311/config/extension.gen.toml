@@ -1,0 +1,22 @@
+
+[package]
+    archivePath = "https://d2cerybs4newgl.cloudfront.net/omni.kit.commands-81cda6a0efadc352.zip"
+
+    [package.publish]
+        kitVersion = "107.3.3+production.229672.69cbf6ad.gl"
+        date = 1757755119
+        buildNumber = "107.3.3+1073.229672.69cbf6ad.gl"
+
+    [package.target]
+
+        [package.target.config]
+            0 = "release"
+
+        [package.target.python]
+            0 = "cp311"
+
+        [package.target.platform]
+            0 = "windows-x86_64"
+
+        [package.target.kitHash]
+            0 = "69cbf6ad"

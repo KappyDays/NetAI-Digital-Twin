@@ -1,0 +1,21 @@
+[package]
+version = "1.0.0"
+category = "Simulation"
+title = "KKR.ObjectDetector"
+description = "Real-time object detection in Isaac Sim viewport using YOLOv8"
+authors = ["KKR"]
+repository = ""
+keywords = ["detection", "yolo", "viewport", "camera"]
+changelog = "docs/CHANGELOG.md"
+readme = "docs/README.md"
+preview_image = "data/preview.png"
+icon = "data/icon.png"
+writeTarget.kit = true
+
+[dependencies]
+"isaacsim.core.api" = {}
+"isaacsim.gui.components" = {}
+"omni.kit.uiapp" = {}
+
+[[python.module]]
+name = "KKR_ObjectDetector_python"

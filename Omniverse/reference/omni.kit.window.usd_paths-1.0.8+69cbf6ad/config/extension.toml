@@ -1,0 +1,50 @@
+[package]
+# Semantic Versioning is used: https://semver.org/
+version = "1.0.8"
+
+category = "Tools"
+
+# Lists people or organizations that are considered the "authors" of the package.
+authors = ["NVIDIA"]
+
+# The title and description fields are primarly for displaying extension info in UI
+title = "USD Paths"
+description="Lists paths in USD file and allows editing"
+
+# URL of the extension source repository.
+repository = ""
+
+# Keywords for the extension
+keywords = ["kit", "usd", "paths"]
+support_level = "Sample"
+feature = true
+
+# Location of change log file in target (final) folder of extension, relative to the root.
+# More info on writing changelog: https://keepachangelog.com/en/1.0.0/
+changelog = "docs/CHANGELOG.md"
+
+[dependencies]
+"omni.kit.commands" = {}
+"omni.usd" = {}
+"omni.ui" = {}
+"omni.kit.menu.utils" = {}
+
+[[python.module]]
+name = "omni.kit.window.usd_paths"
+
+# That will make tests auto-discoverable by test_runner:
+# [[python.module]]
+# name = "omni.kit.window.usd_paths.tests"
+
+[[test]]
+stdoutFailPatterns.exclude = [
+    "*extension object is still alive*", # Ignore any leaks for startup tests to not block pipeline
+]
+
+args = [
+    "--/app/file/ignoreUnsavedStage=true",
+]
+
+dependencies = [
+    "omni.kit.ui_test"
+]

@@ -90,7 +90,7 @@ class UIBuilder:
             with ui.VStack(style=get_style(), spacing=5, height=0):
                 self._status_field = TextBlock(
                     "Last Operation",
-                    num_lines=8,
+                    num_lines=5,
                     tooltip="Operation results and logs",
                     include_copy_button=True,
                 )
@@ -154,22 +154,21 @@ class UIBuilder:
                     word_wrap=True,
                     style={"color": 0xFFAAAAAA},
                 )
-                with ui.HStack(height=30, spacing=8):
-                    btn_setup = Button(
-                        "Stage Setup",
-                        "SETUP STAGE",
-                        tooltip="Create /World with 3 Xform groups + Reference assets",
-                        on_click_fn=self._on_stage_setup,
-                    )
-                    self.wrapped_ui_elements.append(btn_setup)
+                btn_setup = Button(
+                    "Stage Setup",
+                    "SETUP STAGE",
+                    tooltip="Create /World with 3 Xform groups + Reference assets",
+                    on_click_fn=self._on_stage_setup,
+                )
+                self.wrapped_ui_elements.append(btn_setup)
 
-                    btn_clear = Button(
-                        "Stage Clear",
-                        "CLEAR STAGE",
-                        tooltip="Remove all Prims under /World",
-                        on_click_fn=self._on_stage_clear,
-                    )
-                    self.wrapped_ui_elements.append(btn_clear)
+                btn_clear = Button(
+                    "Stage Clear",
+                    "CLEAR STAGE",
+                    tooltip="Remove all Prims under /World",
+                    on_click_fn=self._on_stage_clear,
+                )
+                self.wrapped_ui_elements.append(btn_clear)
 
     def _on_stage_setup(self):
         """Create /World with 3 Xform groups + Nucleus Reference assets."""
@@ -206,8 +205,8 @@ class UIBuilder:
 
             # ── Xform 2: Robots ──
             UsdGeom.Xform.Define(stage, "/World/Robots")
-            self._add_reference(stage, f"{root}/Isaac/Robots/Jetbot/jetbot.usd", "/World/Robots/Jetbot")
-            self._add_reference(stage, f"{root}/Isaac/Robots/Kaya/kaya.usd", "/World/Robots/Kaya")
+            self._add_reference(stage, f"{root}/Isaac/Robots/NVIDIA/Jetbot/jetbot.usd", "/World/Robots/Jetbot")
+            self._add_reference(stage, f"{root}/Isaac/Robots/NVIDIA/Kaya/kaya.usd", "/World/Robots/Kaya")
 
             # ── Xform 3: Props ──
             UsdGeom.Xform.Define(stage, "/World/Props")
@@ -357,6 +356,7 @@ class UIBuilder:
             # 4. Send to API
             payload = {
                 "backup_time": backup_time,
+                "backup_source": "extension",
                 "entities": entity_rows,
                 "prim_snapshots": prim_rows,
             }
@@ -461,15 +461,22 @@ class UIBuilder:
 
     @staticmethod
     def _extract_properties(prim) -> dict:
-        """Extract all authored properties from a USD Prim as a dict."""
+        """Extract ALL authored/composed properties from a USD Prim.
+
+        Captures:
+        - Attributes: transforms, visibility, purpose, custom attrs
+        - Relationships: material bindings, proxy targets, etc.
+        - Metadata: kind, instanceable, active, hidden, customData, assetInfo
+        """
         props = {}
         try:
             props["typeName"] = prim.GetTypeName()
+
+            # ── 1. Attributes (transforms, visibility, purpose, etc.) ──
             for attr in prim.GetAttributes():
                 if attr.HasAuthoredValue():
                     val = attr.Get()
                     name = attr.GetName()
-                    # Convert USD types to JSON-serializable
                     if val is None:
                         props[name] = None
                     elif hasattr(val, "__len__") and not isinstance(val, str):
@@ -481,6 +488,45 @@ class UIBuilder:
                         props[name] = val
                     else:
                         props[name] = str(val)
+
+            # ── 2. Relationships (material bindings, etc.) ──
+            for rel in prim.GetRelationships():
+                if rel.HasAuthoredTargets():
+                    targets = rel.GetTargets()
+                    name = rel.GetName()
+                    props[f"rel:{name}"] = [str(t) for t in targets]
+
+            # ── 3. Metadata ──
+            from pxr import Usd
+
+            # Kind
+            model = Usd.ModelAPI(prim)
+            kind = model.GetKind()
+            if kind:
+                props["meta:kind"] = kind
+
+            # Instanceable
+            if prim.HasAuthoredMetadata("instanceable"):
+                props["meta:instanceable"] = prim.IsInstanceable()
+
+            # Active
+            if prim.HasAuthoredMetadata("active"):
+                props["meta:active"] = prim.IsActive()
+
+            # Hidden
+            if prim.HasAuthoredMetadata("hidden"):
+                props["meta:hidden"] = prim.IsHidden()
+
+            # CustomData (user-defined key-value pairs)
+            custom_data = prim.GetCustomData()
+            if custom_data:
+                props["meta:customData"] = {str(k): str(v) for k, v in custom_data.items()}
+
+            # AssetInfo
+            asset_info = prim.GetAssetInfo()
+            if asset_info:
+                props["meta:assetInfo"] = {str(k): str(v) for k, v in asset_info.items()}
+
         except Exception:
             pass
         return props
@@ -565,6 +611,205 @@ class UIBuilder:
 
         return tmp_path
 
+    @staticmethod
+    def _apply_property_overrides(stage, entity_path: str, prim_snapshots: list) -> int:
+        """Apply backed-up property values as overrides on the restored entity.
+
+        Handles three categories:
+        1. xformOps (translate, orient, scale, rotateXYZ) — created via UsdGeom.Xformable API
+        2. Relationships (material bindings) — restored via Relationship API
+        3. Regular attributes (visibility, purpose, custom) — set or created as needed
+
+        Returns the number of properties successfully applied.
+        """
+        from pxr import Gf, Usd
+
+        applied = 0
+        for snap in prim_snapshots:
+            rel_path = snap.get("relative_path", "/")
+            props_json = snap.get("properties", "{}")
+            full_path = entity_path + rel_path if rel_path != "/" else entity_path
+
+            prim = stage.GetPrimAtPath(full_path)
+            if not prim.IsValid():
+                continue
+
+            try:
+                props = json.loads(props_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # Separate properties into categories
+            xform_ops = {}
+            relationships = {}
+            metadata = {}
+            regular_attrs = {}
+
+            for attr_name, attr_val in props.items():
+                if attr_name == "typeName" or attr_name == "xformOpOrder":
+                    continue
+                elif attr_name.startswith("meta:"):
+                    metadata[attr_name[5:]] = attr_val
+                elif attr_name.startswith("rel:"):
+                    relationships[attr_name[4:]] = attr_val
+                elif attr_name.startswith("xformOp:"):
+                    xform_ops[attr_name] = attr_val
+                else:
+                    regular_attrs[attr_name] = attr_val
+
+            # ── 1. Apply xformOps via Xformable API ──────────────────
+            if xform_ops:
+                xformable = UsdGeom.Xformable(prim)
+                # Clear any existing xformOpOrder to start fresh
+                xformable.ClearXformOpOrder()
+
+                # Apply in standard order: translate → orient/rotate → scale
+                if "xformOp:translate" in xform_ops:
+                    val = xform_ops["xformOp:translate"]
+                    op = xformable.AddTranslateOp()
+                    if isinstance(val, list) and len(val) == 3:
+                        op.Set(Gf.Vec3d(val[0], val[1], val[2]))
+                    applied += 1
+
+                if "xformOp:orient" in xform_ops:
+                    val = xform_ops["xformOp:orient"]
+                    op = xformable.AddOrientOp()
+                    if isinstance(val, list) and len(val) == 4:
+                        op.Set(Gf.Quatd(val[3], val[0], val[1], val[2]))
+                    applied += 1
+
+                if "xformOp:rotateXYZ" in xform_ops:
+                    val = xform_ops["xformOp:rotateXYZ"]
+                    op = xformable.AddRotateXYZOp()
+                    if isinstance(val, list) and len(val) == 3:
+                        op.Set(Gf.Vec3f(val[0], val[1], val[2]))
+                    applied += 1
+
+                if "xformOp:scale" in xform_ops:
+                    val = xform_ops["xformOp:scale"]
+                    op = xformable.AddScaleOp()
+                    if isinstance(val, list) and len(val) == 3:
+                        op.Set(Gf.Vec3d(val[0], val[1], val[2]))
+                    applied += 1
+
+                # Handle any other xformOps not covered above
+                for op_name, op_val in xform_ops.items():
+                    if op_name in ("xformOp:translate", "xformOp:orient",
+                                   "xformOp:rotateXYZ", "xformOp:scale"):
+                        continue  # already handled
+                    try:
+                        attr = prim.GetAttribute(op_name)
+                        if attr.IsValid():
+                            UIBuilder._set_attr_value(attr, op_val)
+                            applied += 1
+                    except Exception:
+                        pass
+
+            # ── 2. Apply Relationships (material bindings, etc.) ──────
+            for rel_name, targets in relationships.items():
+                try:
+                    rel = prim.GetRelationship(rel_name)
+                    if not rel.IsValid():
+                        rel = prim.CreateRelationship(rel_name)
+                    if rel.IsValid() and isinstance(targets, list):
+                        rel.SetTargets([Sdf.Path(t) for t in targets])
+                        applied += 1
+                except Exception:
+                    pass
+
+            # ── 3. Apply Metadata (kind, instanceable, active, hidden, customData, assetInfo) ──
+            for meta_key, meta_val in metadata.items():
+                try:
+                    if meta_key == "kind":
+                        Usd.ModelAPI(prim).SetKind(meta_val)
+                        applied += 1
+                    elif meta_key == "instanceable":
+                        prim.SetInstanceable(bool(meta_val))
+                        applied += 1
+                    elif meta_key == "active":
+                        prim.SetActive(bool(meta_val))
+                        applied += 1
+                    elif meta_key == "hidden":
+                        prim.SetHidden(bool(meta_val))
+                        applied += 1
+                    elif meta_key == "customData" and isinstance(meta_val, dict):
+                        for k, v in meta_val.items():
+                            prim.SetCustomDataByKey(k, v)
+                        applied += 1
+                    elif meta_key == "assetInfo" and isinstance(meta_val, dict):
+                        for k, v in meta_val.items():
+                            prim.SetAssetInfoByKey(k, v)
+                        applied += 1
+                except Exception:
+                    pass
+
+            # ── 4. Apply regular attributes ───────────────────────────
+            for attr_name, attr_val in regular_attrs.items():
+                try:
+                    attr = prim.GetAttribute(attr_name)
+                    if attr.IsValid():
+                        UIBuilder._set_attr_value(attr, attr_val)
+                        applied += 1
+                except Exception:
+                    pass
+
+        return applied
+
+    @staticmethod
+    def _set_attr_value(attr, val):
+        """Set a USD attribute value, converting Python types to USD types."""
+        from pxr import Gf
+        current = attr.Get()
+        if current is None:
+            # Try to set directly
+            attr.Set(val)
+            return
+
+        if isinstance(val, list):
+            if len(val) == 2:
+                if isinstance(current, Gf.Vec2f):
+                    attr.Set(Gf.Vec2f(*val))
+                elif isinstance(current, Gf.Vec2d):
+                    attr.Set(Gf.Vec2d(*val))
+                else:
+                    attr.Set(val)
+            elif len(val) == 3:
+                if isinstance(current, Gf.Vec3d):
+                    attr.Set(Gf.Vec3d(*val))
+                elif isinstance(current, Gf.Vec3f):
+                    attr.Set(Gf.Vec3f(*val))
+                elif isinstance(current, Gf.Vec3h):
+                    attr.Set(Gf.Vec3h(*val))
+                else:
+                    attr.Set(val)
+            elif len(val) == 4:
+                if isinstance(current, Gf.Vec4d):
+                    attr.Set(Gf.Vec4d(*val))
+                elif isinstance(current, Gf.Vec4f):
+                    attr.Set(Gf.Vec4f(*val))
+                elif isinstance(current, Gf.Quatd):
+                    attr.Set(Gf.Quatd(val[3], val[0], val[1], val[2]))
+                elif isinstance(current, Gf.Quatf):
+                    attr.Set(Gf.Quatf(val[3], val[0], val[1], val[2]))
+                else:
+                    attr.Set(val)
+            else:
+                attr.Set(val)
+        elif isinstance(val, bool):
+            attr.Set(val)
+        elif isinstance(val, (int, float)):
+            # Match the existing type
+            if isinstance(current, float):
+                attr.Set(float(val))
+            elif isinstance(current, int):
+                attr.Set(int(val))
+            else:
+                attr.Set(val)
+        elif isinstance(val, str):
+            attr.Set(val)
+        else:
+            attr.Set(val)
+
     # =========================================================================
     #  Entity Restore
     # =========================================================================
@@ -574,72 +819,68 @@ class UIBuilder:
         with frame:
             with ui.VStack(style=get_style(), spacing=5, height=0):
                 ui.Label(
-                    "Select a backup time and entity to restore from Lakehouse.\n"
-                    "Click 'Load Backup Times' first, then select and restore.",
+                    "Restore an entity from a previous backup.",
                     word_wrap=True,
                     style={"color": 0xFFAAAAAA},
                 )
 
-                btn_load = Button(
-                    "Load Backup Times",
-                    "LOAD TIMES",
-                    tooltip="Fetch available backup timestamps from API",
-                    on_click_fn=self._on_load_backup_times,
-                )
-                self.wrapped_ui_elements.append(btn_load)
-
-                # Backup time selector
-                self._restore_time_label = ui.Label(
-                    "Backup Time: (not loaded)",
-                    style={"color": 0xFFCCCCCC, "font_size": 13},
-                )
-                with ui.HStack(height=28, spacing=4):
-                    btn_prev_time = Button(
-                        "<", "PREV",
+                # ── Backup Time row: [< PREV] [label] [NEXT >] ──
+                ui.Label("Backup Time", style={"color": 0xFF999999, "font_size": 11})
+                with ui.HStack(height=26, spacing=4):
+                    ui.Button(
+                        "<<", width=40, height=24,
+                        clicked_fn=self._on_prev_backup_time,
                         tooltip="Previous backup time",
-                        on_click_fn=self._on_prev_backup_time,
                     )
-                    self.wrapped_ui_elements.append(btn_prev_time)
-                    btn_next_time = Button(
-                        ">", "NEXT",
+                    self._restore_time_label = ui.Label(
+                        "(not loaded)",
+                        alignment=ui.Alignment.CENTER,
+                        style={"color": 0xFFEEEEEE, "font_size": 13},
+                    )
+                    ui.Button(
+                        ">>", width=40, height=24,
+                        clicked_fn=self._on_next_backup_time,
                         tooltip="Next backup time",
-                        on_click_fn=self._on_next_backup_time,
                     )
-                    self.wrapped_ui_elements.append(btn_next_time)
-                    btn_load_ents = Button(
-                        "Load Entities",
-                        "LOAD ENTITIES",
-                        tooltip="Load entity list for selected backup time",
-                        on_click_fn=self._on_load_entities_for_restore,
-                    )
-                    self.wrapped_ui_elements.append(btn_load_ents)
 
-                # Entity selector
-                self._restore_entity_label = ui.Label(
-                    "Entity: (not loaded)",
-                    style={"color": 0xFFCCCCCC, "font_size": 13},
-                )
-                with ui.HStack(height=28, spacing=4):
-                    btn_prev_ent = Button(
-                        "<", "PREV ENT",
+                # ── Entity row: [< PREV] [label] [NEXT >] ──
+                ui.Label("Entity", style={"color": 0xFF999999, "font_size": 11})
+                with ui.HStack(height=26, spacing=4):
+                    ui.Button(
+                        "<<", width=40, height=24,
+                        clicked_fn=self._on_prev_entity,
                         tooltip="Previous entity",
-                        on_click_fn=self._on_prev_entity,
                     )
-                    self.wrapped_ui_elements.append(btn_prev_ent)
-                    btn_next_ent = Button(
-                        ">", "NEXT ENT",
+                    self._restore_entity_label = ui.Label(
+                        "(not loaded)",
+                        alignment=ui.Alignment.CENTER,
+                        style={"color": 0xFFEEEEEE, "font_size": 13},
+                    )
+                    ui.Button(
+                        ">>", width=40, height=24,
+                        clicked_fn=self._on_next_entity,
                         tooltip="Next entity",
-                        on_click_fn=self._on_next_entity,
                     )
-                    self.wrapped_ui_elements.append(btn_next_ent)
 
-                btn_restore = Button(
-                    "Restore Selected Entity",
-                    "RESTORE",
+                # ── Action buttons ──
+                ui.Spacer(height=2)
+                with ui.HStack(height=28, spacing=8):
+                    ui.Button(
+                        "Load Backup Times", height=26,
+                        clicked_fn=self._on_load_backup_times,
+                        tooltip="Fetch available backup timestamps from API",
+                    )
+                    ui.Button(
+                        "Load Entities", height=26,
+                        clicked_fn=self._on_load_entities_for_restore,
+                        tooltip="Load entity list for selected backup time",
+                    )
+                ui.Button(
+                    "Restore Selected Entity", height=30,
+                    clicked_fn=self._on_restore_entity,
                     tooltip="Restore entity from backup to current Stage",
-                    on_click_fn=self._on_restore_entity,
+                    style={"Button": {"background_color": 0xFF2266AA}},
                 )
-                self.wrapped_ui_elements.append(btn_restore)
 
     def _on_load_backup_times(self):
         try:
@@ -737,7 +978,7 @@ class UIBuilder:
             prim_snapshots = result.get("prim_snapshots", [])
             usd_path = entity_info.get("usd_file_path", "")
 
-            # Strategy: Level 3 (USD binary) → Level 2 (source_asset ref) → Level 1 (prim snapshots)
+            # Strategy: Level 3 (USD binary) → Level 2 (source ref + property overrides) → Level 1 (prim snapshots)
             restore_method = "unknown"
 
             if usd_path and usd_path.startswith("s3://"):
@@ -756,7 +997,6 @@ class UIBuilder:
                     restore_method = None  # fall through to Level 2
 
             if restore_method == "unknown":
-                # No USD path available, try Level 2
                 restore_method = None
 
             if restore_method is None:
@@ -775,13 +1015,15 @@ class UIBuilder:
                         stage.DefinePrim(full_path, prim_type)
                     restore_method = f"Level 1 (prim snapshots: {len(prim_snapshots)} prims)"
 
+            # Apply property overrides from prim snapshots (restores transforms, visibility, etc.)
+            overrides_applied = self._apply_property_overrides(stage, entity_path, prim_snapshots)
+
             self._set_status(
                 f"[OK] Restored entity '{entity_path}':\n"
                 f"  Method: {restore_method}\n"
                 f"  Backup time: {bt}\n"
-                f"  Sub-prims in snapshot: {len(prim_snapshots)}"
-                    f"  Backup time: {bt}"
-                )
+                f"  Sub-prims: {len(prim_snapshots)}, Overrides applied: {overrides_applied}"
+            )
         except Exception as e:
             self._set_status(f"[FAIL] Restore error:\n{traceback.format_exc()}")
 

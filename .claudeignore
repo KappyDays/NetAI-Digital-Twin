@@ -1,0 +1,13 @@
+node_modules/
+dist/
+build/
+__pycache__/
+*.lock
+.next/
+.git/
+*.min.js
+*.map
+.venv/
+.omc/
+*.pyc
+.cache/

@@ -46,6 +46,12 @@ const NAV_ITEMS = [
     icon: "\u0394",
     description: "Entity 변경감지 3-Level 드릴다운",
   },
+  {
+    to: "/raw-backup",
+    label: "Raw Backup",
+    icon: "\u2601",
+    description: "Nucleus 폴더 Raw 백업 탐색기",
+  },
 ];
 
 export default function DashboardLayout() {

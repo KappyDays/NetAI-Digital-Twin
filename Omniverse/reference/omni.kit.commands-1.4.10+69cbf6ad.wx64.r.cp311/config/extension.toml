@@ -1,0 +1,37 @@
+[package]
+title = "Commands"
+category = "Internal"
+reloadable = false
+version = "1.4.10"
+changelog="docs/CHANGELOG.md"
+description="Core framework for commands and the undo/redo system in Kit"
+keywords = ["kit", "commands"]
+support_level = "Core"
+readme = "docs/Overview.md"
+
+[dependencies]
+"omni.kit.actions.core" = {}
+
+[[python.module]]
+name = "omni.kit.undo"
+
+[[python.module]]
+name = "omni.kit.commands"
+
+# Bring in some builtin commands
+[[python.module]]
+name = "omni.kit.commands.builtin"
+
+[settings]
+# Store last N command history entries in crash report
+exts."omni.kit.commands".crashReportHistoryCount = 10
+
+[[native.plugin]]
+path = "bin/*.plugin"
+
+[documentation]
+pages = [
+    "docs/Overview.md",
+    "docs/USAGE_CPP.md",
+    "docs/CHANGELOG.md",
+]

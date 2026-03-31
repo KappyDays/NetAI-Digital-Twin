@@ -1,0 +1,21 @@
+[package]
+version = "1.0.0"
+category = "Simulation"
+title = "KKR.PhysicsSim"
+description = "Physics simulation with autonomous agents patrolling waypoints in a room environment"
+authors = ["KKR"]
+repository = ""
+keywords = ["physics", "simulation", "waypoint", "patrol", "robot", "humanoid"]
+changelog = "docs/CHANGELOG.md"
+readme = "docs/README.md"
+preview_image = "data/preview.png"
+icon = "data/icon.png"
+writeTarget.kit = true
+
+[dependencies]
+"isaacsim.core.api" = {}
+"isaacsim.gui.components" = {}
+"omni.kit.uiapp" = {}
+
+[[python.module]]
+name = "KKR_PhysicsSim_python"

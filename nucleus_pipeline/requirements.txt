@@ -1,0 +1,4 @@
+usd-core>=24.0
+requests>=2.28
+# Optional: Nucleus SDK (install separately)
+# pip install omniverseclient --extra-index-url https://pypi.nvidia.com

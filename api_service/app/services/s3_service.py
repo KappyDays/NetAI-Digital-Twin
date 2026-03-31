@@ -52,10 +52,15 @@ def upload_usd_file(
     file_content: bytes,
     filename: str,
     prim_path: str = "",
+    s3_key: str | None = None,
 ) -> dict:
-    """Upload a USD file to S3 and return metadata."""
+    """Upload a USD file to S3 and return metadata.
+
+    Args:
+        s3_key: Custom S3 key. If None, uses default prefix + filename.
+    """
     client = get_s3_client()
-    s3_key = f"{settings.s3_usd_prefix}{filename}"
+    s3_key = s3_key or f"{settings.s3_usd_prefix}{filename}"
 
     client.upload_fileobj(
         io.BytesIO(file_content),
@@ -70,3 +75,10 @@ def upload_usd_file(
         "s3_key": s3_key,
         "bucket": settings.s3_bucket,
     }
+
+
+def download_file(s3_key: str) -> bytes:
+    """Download a file from S3 by key."""
+    client = get_s3_client()
+    obj = client.get_object(Bucket=settings.s3_bucket, Key=s3_key)
+    return obj["Body"].read()

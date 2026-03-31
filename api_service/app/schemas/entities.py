@@ -33,6 +33,7 @@ class PrimSnapshotRecord(BaseModel):
 
 class EntityBackupRequest(BaseModel):
     backup_time: str
+    backup_source: str = "extension"  # "extension" | "nucleus" | "local"
     entities: List[EntityRecord]
     prim_snapshots: List[PrimSnapshotRecord]
 
@@ -53,6 +54,7 @@ class EntityListResponse(BaseModel):
 
 class BackupTimesResponse(BaseModel):
     backup_times: List[str]
+    backup_sources: List[str] = []
 
 
 # ── Diff ──────────────────────────────────────────────────────────────
