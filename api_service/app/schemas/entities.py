@@ -21,6 +21,7 @@ class EntityRecord(BaseModel):
     child_count: int = 0
     entity_hash: str = ""
     usd_file_path: str = ""
+    depends_on: str = ""
 
 
 class PrimSnapshotRecord(BaseModel):

@@ -51,7 +51,8 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
             asset_urls[entity_path] = info["source_asset"]
 
         # Collect overrides for this entity and its children from root layer
-        entity_overrides = _collect_overrides_recursive(root_layer, entity_path)
+        # Pass entity_paths so nested entity boundaries are not crossed
+        entity_overrides = _collect_overrides_recursive(root_layer, entity_path, entity_paths)
 
         # Compute combined hash from all sub-prim overrides
         all_hashes = []
@@ -72,8 +73,11 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
             "".join(sorted(all_hashes)).encode()
         ).hexdigest()[:16]
 
+        # Build depends_on: entity paths referenced via rel: keys in override properties
+        depends_on = _extract_depends_on(entity_overrides, entity_path, entity_paths)
+
         entities.append({
-            "entity_id": str(uuid.uuid4()),
+            "entity_id": str(uuid.uuid5(uuid.NAMESPACE_URL, entity_path)),
             "entity_path": entity_path,
             "entity_type": info["type"],
             "source_type": info["source_type"],
@@ -83,6 +87,7 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
             "child_count": len(entity_overrides),
             "entity_hash": combined_hash,
             "usd_file_path": "",
+            "depends_on": json.dumps(depends_on),
         })
 
     return entities, prim_snapshots, asset_urls
@@ -126,17 +131,25 @@ def _traverse_layer_for_entities(layer, path: str, entity_paths: dict):
         _traverse_layer_for_entities(layer, child_path, entity_paths)
 
 
-def _collect_overrides_recursive(layer, prim_path: str) -> dict[str, dict]:
+def _collect_overrides_recursive(
+    layer, prim_path: str, entity_paths: dict | None = None, _root_path: str | None = None
+) -> dict[str, dict]:
     """Collect all authored overrides for a prim and its children from a Sdf layer.
 
     Args:
         layer: Sdf.Layer (root layer)
         prim_path: USD prim path string
+        entity_paths: dict of all known entity paths; children that are separate
+                      entities are skipped to avoid cross-entity override inclusion
+        _root_path: the top-level entity path being collected (set on first call)
 
     Returns:
         {full_prim_path: {prop_name: value, ...}} for every prim with overrides
     """
     from pxr import Sdf
+
+    if _root_path is None:
+        _root_path = prim_path
 
     result = {}
     layer_prim = layer.GetPrimAtPath(prim_path)
@@ -148,10 +161,13 @@ def _collect_overrides_recursive(layer, prim_path: str) -> dict[str, dict]:
     if props:
         result[prim_path] = props
 
-    # Recurse into children
+    # Recurse into children, stopping at nested entity boundaries
     for child_spec in layer_prim.nameChildren:
         child_path = f"{prim_path}/{child_spec.name}"
-        child_overrides = _collect_overrides_recursive(layer, child_path)
+        # Skip children that are their own entity (prevents cross-entity hash contamination)
+        if entity_paths is not None and child_path in entity_paths and child_path != _root_path:
+            continue
+        child_overrides = _collect_overrides_recursive(layer, child_path, entity_paths, _root_path)
         result.update(child_overrides)
 
     return result
@@ -214,14 +230,52 @@ def _to_json_value(val: Any) -> Any:
     """Convert a USD/Sdf value to a JSON-serializable Python type."""
     if val is None:
         return None
-    if isinstance(val, (int, float, bool, str)):
+    if isinstance(val, bool):
         return val
-    if hasattr(val, "__len__") and not isinstance(val, str):
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        return round(val, 9)
+    if isinstance(val, str):
+        return val
+    if hasattr(val, "__len__"):
         try:
-            return [float(v) for v in val]
+            return [round(float(v), 9) for v in val]
         except (TypeError, ValueError):
             return str(val)
     return str(val)
+
+
+def _extract_depends_on(
+    entity_overrides: dict[str, dict], entity_path: str, entity_paths: dict
+) -> list[str]:
+    """Extract cross-entity dependencies from relationship properties.
+
+    Scans all overrides for keys starting with "rel:" and checks if their target
+    paths belong to a different entity in entity_paths.
+
+    Returns:
+        Sorted, deduplicated list of entity_paths this entity depends on.
+    """
+    deps: set[str] = set()
+    for props in entity_overrides.values():
+        for key, val in props.items():
+            if not key.startswith("rel:"):
+                continue
+            targets = val if isinstance(val, list) else [val]
+            for target in targets:
+                target_str = str(target)
+                # Find the entity this target belongs to (longest prefix match)
+                matched = None
+                for ep in entity_paths:
+                    if ep == entity_path:
+                        continue
+                    if target_str == ep or target_str.startswith(ep + "/"):
+                        if matched is None or len(ep) > len(matched):
+                            matched = ep
+                if matched is not None:
+                    deps.add(matched)
+    return sorted(deps)
 
 
 def generate_root_usda(source_path: str, asset_urls: dict[str, str], output_path: str):

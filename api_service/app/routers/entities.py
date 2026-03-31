@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.entities (
     entity_hash VARCHAR,
     usd_file_path VARCHAR,
     backup_source VARCHAR,
+    depends_on VARCHAR,
     backup_time TIMESTAMP(6)
 ) WITH (
     partitioning = ARRAY['day(backup_time)']
@@ -138,7 +139,7 @@ async def backup_entities(req: EntityBackupRequest):
                     f"'{_esc(e.source_type)}', '{_esc(e.source_asset)}', "
                     f"{str(e.is_dynamic).lower()}, '{_esc(e.dynamic_table)}', "
                     f"{e.child_count}, '{_esc(e.entity_hash)}', '{_esc(e.usd_file_path)}', "
-                    f"'{_esc(req.backup_source)}', "
+                    f"'{_esc(req.backup_source)}', '{_esc(e.depends_on)}', "
                     f"TIMESTAMP '{_esc(backup_ts)}')"
                 )
                 values_rows.append(row)
@@ -147,7 +148,7 @@ async def backup_entities(req: EntityBackupRequest):
                 f"INSERT INTO {catalog}.{ns}.entities "
                 f"(entity_id, entity_path, entity_type, source_type, source_asset, "
                 f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, "
-                f"backup_source, backup_time) "
+                f"backup_source, depends_on, backup_time) "
                 f"VALUES {', '.join(values_rows)}"
             )
             try:
@@ -228,7 +229,7 @@ async def list_entities(backup_time: str = Query(..., description="Backup timest
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, backup_time "
+            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on, backup_time "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}' "
             f"ORDER BY entity_path"
@@ -423,7 +424,7 @@ async def restore_all(
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path "
+            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}'"
         )
@@ -463,6 +464,56 @@ async def restore_all(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+#  GET /entities/{entity_path}/restore-prims
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/entities/{entity_path:path}/restore-prims")
+async def restore_entity_prims(
+    entity_path: str,
+    backup_time: str = Query(...),
+    relative_paths: str = Query(..., description="Comma-separated relative paths to restore"),
+):
+    """Get specific prim snapshots for partial entity restoration.
+
+    Allows restoring only selected sub-prims (e.g., one Material from Looks)
+    instead of the full entity prim list.
+    """
+    backup_time = _validate_timestamp(backup_time)
+    ensure_entity_tables()
+    entity_path = "/" + entity_path if not entity_path.startswith("/") else entity_path
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+
+    paths = [p.strip() for p in relative_paths.split(",") if p.strip()]
+    if not paths:
+        raise HTTPException(status_code=400, detail="relative_paths must not be empty")
+
+    paths_list = ", ".join(f"'{_esc(p)}'" for p in paths)
+
+    with trino_cursor(schema=ns) as cursor:
+        cursor.execute(
+            f"SELECT relative_path, prim_type, properties, prim_hash "
+            f"FROM {catalog}.{ns}.prim_snapshots "
+            f"WHERE entity_path = '{_esc(entity_path)}' "
+            f"AND backup_time = TIMESTAMP '{_esc(backup_time)}' "
+            f"AND relative_path IN ({paths_list}) "
+            f"ORDER BY relative_path"
+        )
+        p_cols = [desc[0] for desc in cursor.description]
+        p_rows = cursor.fetchall()
+
+    prim_snapshots = [dict(zip(p_cols, row)) for row in p_rows]
+
+    return {
+        "entity_path": entity_path,
+        "backup_time": backup_time,
+        "requested_paths": paths,
+        "prim_count": len(prim_snapshots),
+        "prim_snapshots": prim_snapshots,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
 #  GET /entities/{entity_path}/restore
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -482,7 +533,7 @@ async def restore_entity(
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path "
+            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE entity_path = '{_esc(entity_path)}' "
             f"AND backup_time = TIMESTAMP '{_esc(backup_time)}'"

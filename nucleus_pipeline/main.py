@@ -22,7 +22,7 @@ import tempfile
 import time
 
 
-def raw_backup_main(args):
+def raw_backup_main(args, backup_time=None):
     """Execute raw folder backup with incremental support."""
     start_time = time.time()
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -64,7 +64,8 @@ def raw_backup_main(args):
     # ── Step 3: Classify files (new/modified/deleted/unchanged) ─
     print("\nStep 3: Comparing files...")
     from lakehouse_client import generate_backup_time
-    backup_time = generate_backup_time()
+    if backup_time is None:
+        backup_time = generate_backup_time()
 
     # Build lookup from previous backup
     prev_lookup = {}
@@ -260,42 +261,8 @@ def raw_backup_main(args):
     print("=" * 60)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Nucleus Pipeline v2: Complete Stage Backup + Time Travel"
-    )
-    # Existing Prim backup mode
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--local-path", help="Path to a local .usd/.usda file")
-    group.add_argument("--nucleus-path", help="Nucleus path (omniverse://server/path/scene.usd)")
-
-    # Raw backup mode
-    parser.add_argument("--raw-backup", action="store_true", help="Raw folder backup mode (download entire Nucleus folder)")
-    parser.add_argument("--nucleus-folder", help="Nucleus folder path for raw backup (omniverse://server/path/folder)")
-
-    # Common args
-    parser.add_argument(
-        "--api-url",
-        default=os.getenv("LAKEHOUSE_API_URL", "http://localhost:8100"),
-        help="Lakehouse API base URL (default: http://localhost:8100)",
-    )
-    parser.add_argument(
-        "--nucleus-token",
-        default=os.getenv("NUCLEUS_TOKEN", ""),
-        help="Nucleus auth token (or set NUCLEUS_TOKEN env var)",
-    )
-    parser.add_argument("--backup-source", default=None, help="Override backup_source label")
-    parser.add_argument("--skip-usd-upload", action="store_true", help="Skip USD file upload to MinIO")
-
-    args = parser.parse_args()
-
-    if args.raw_backup:
-        if not args.nucleus_folder:
-            parser.error("--raw-backup requires --nucleus-folder")
-        raw_backup_main(args)
-        return
-    elif not args.local_path and not args.nucleus_path:
-        parser.error("Either --local-path, --nucleus-path, or --raw-backup is required")
+def entity_backup_main(args, backup_time=None):
+    """Execute entity-level USD backup (Task 2)."""
     start_time = time.time()
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -387,7 +354,8 @@ def main():
 
     # ── Step 5: Upload to MinIO ───────────────────────────────
     from lakehouse_client import generate_backup_time, upload_usd_files
-    backup_time = generate_backup_time()
+    if backup_time is None:
+        backup_time = generate_backup_time()
     usd_uploaded = 0
 
     if not args.skip_usd_upload:
@@ -437,6 +405,64 @@ def main():
         print(f"\nERROR: Failed to send backup to API: {e}")
         print(f"  Elapsed: {elapsed:.2f}s")
         sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Nucleus Pipeline v2: Complete Stage Backup + Time Travel"
+    )
+    # Existing Prim backup mode
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--local-path", help="Path to a local .usd/.usda file")
+    group.add_argument("--nucleus-path", help="Nucleus path (omniverse://server/path/scene.usd)")
+
+    # Raw backup mode
+    parser.add_argument("--raw-backup", action="store_true", help="Raw folder backup mode (download entire Nucleus folder)")
+    parser.add_argument("--nucleus-folder", help="Nucleus folder path for raw backup (omniverse://server/path/folder)")
+
+    # Full backup mode (Task 1 + Task 2 combined)
+    parser.add_argument("--full-backup", action="store_true",
+                        help="Full backup mode: run raw backup (Task 1) + entity backup (Task 2) with shared backup_time")
+
+    # Common args
+    parser.add_argument(
+        "--api-url",
+        default=os.getenv("LAKEHOUSE_API_URL", "http://localhost:8100"),
+        help="Lakehouse API base URL (default: http://localhost:8100)",
+    )
+    parser.add_argument(
+        "--nucleus-token",
+        default=os.getenv("NUCLEUS_TOKEN", ""),
+        help="Nucleus auth token (or set NUCLEUS_TOKEN env var)",
+    )
+    parser.add_argument("--backup-source", default=None, help="Override backup_source label")
+    parser.add_argument("--skip-usd-upload", action="store_true", help="Skip USD file upload to MinIO")
+    parser.add_argument("--backup-time", default=None,
+                        help="Pre-generated backup timestamp (used internally by --full-backup)")
+
+    args = parser.parse_args()
+
+    if args.full_backup:
+        if not args.nucleus_folder:
+            parser.error("--full-backup requires --nucleus-folder")
+        if not args.nucleus_path:
+            parser.error("--full-backup requires --nucleus-path")
+        from lakehouse_client import generate_backup_time
+        shared_backup_time = args.backup_time or generate_backup_time()
+        print(f"Full Backup mode: shared backup_time = {shared_backup_time}")
+        raw_backup_main(args, backup_time=shared_backup_time)
+        entity_backup_main(args, backup_time=shared_backup_time)
+        return
+
+    if args.raw_backup:
+        if not args.nucleus_folder:
+            parser.error("--raw-backup requires --nucleus-folder")
+        raw_backup_main(args, backup_time=args.backup_time)
+        return
+    elif not args.local_path and not args.nucleus_path:
+        parser.error("Either --local-path, --nucleus-path, --raw-backup, or --full-backup is required")
+
+    entity_backup_main(args, backup_time=args.backup_time)
 
 
 if __name__ == "__main__":

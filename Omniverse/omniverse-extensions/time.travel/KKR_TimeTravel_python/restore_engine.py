@@ -7,6 +7,7 @@ Handles:
 - Entity-level restore
 """
 
+import hashlib
 import json
 from typing import Any
 
@@ -207,7 +208,13 @@ def restore_stage(
         if a > 0 or f > 0:
             entities_restored += 1
 
-    # 2. Handle deletion based on mode
+        # Cleanup residual prims inside this entity (Full modes only)
+        if mode in (MODE_FULL_ENTITY, MODE_FULL_ALL):
+            backup_rel_paths = {snap.get("relative_path", "/") for snap in entity_snaps}
+            backup_rel_paths.add("/")  # Always preserve entity root
+            total_deleted += _cleanup_residual_prims(stage, ep, backup_rel_paths, mode)
+
+    # 2. Handle deletion of /World-level entities not in backup
     if mode in (MODE_FULL_ENTITY, MODE_FULL_ALL):
         world_prim = stage.GetPrimAtPath("/World")
         if world_prim.IsValid():
@@ -226,6 +233,14 @@ def restore_stage(
                 # Delete this prim
                 stage.RemovePrim(child_path)
                 total_deleted += 1
+
+    # 3. Post-restore hash verification
+    mismatches = verify_restore(stage, entities, snaps_by_entity)
+    for m in mismatches:
+        all_warnings.append(
+            f"Hash mismatch after restore: {m['entity_path']} "
+            f"(expected={m['expected_hash']}, actual={m['actual_hash']})"
+        )
 
     return entities_restored, total_applied, total_failed, total_deleted, all_warnings
 
@@ -297,6 +312,99 @@ def apply_entity_overrides(
         warnings.extend(w)
 
     return total_applied, total_failed, warnings
+
+
+def _cleanup_residual_prims(
+    stage, entity_path: str, backup_relative_paths: set, mode: str
+) -> int:
+    """Delete prims inside an entity that are not present in backup snapshots.
+
+    Args:
+        stage: The USD Stage
+        entity_path: Root path of the entity, e.g. "/World/AI_Grad_Building"
+        backup_relative_paths: Set of relative_path values from backup prim_snapshots
+                               e.g. {"/", "/Room1", "/Room1/Chair"}
+        mode: Restore mode (MODE_FULL_ENTITY or MODE_FULL_ALL)
+
+    Returns:
+        Number of prims deleted
+    """
+    deleted = 0
+    entity_prim = stage.GetPrimAtPath(entity_path)
+    if not entity_prim.IsValid():
+        return 0
+
+    entity_path_len = len(entity_path)
+    # BFS: check children; skip subtrees already deleted via a parent removal
+    queue = list(entity_prim.GetChildren())
+    while queue:
+        prim = queue.pop(0)
+        prim_path = str(prim.GetPath())
+        rel_path = prim_path[entity_path_len:]  # e.g. "/Room1"
+
+        if rel_path not in backup_relative_paths:
+            stage.RemovePrim(prim_path)
+            deleted += 1
+            # Skip children — they are removed together with the parent
+        else:
+            queue.extend(prim.GetChildren())
+
+    return deleted
+
+
+def verify_restore(
+    stage, entities: list, prim_snapshots_by_entity: dict
+) -> list:
+    """Verify that the Stage overrides match backup hashes after restore.
+
+    Recomputes entity_hash for each entity using the same algorithm as
+    nucleus_pipeline/usd_parser.py (SHA-256 of sorted JSON properties,
+    first 16 chars per prim; then SHA-256 of sorted prim hashes).
+
+    Args:
+        stage: The USD Stage
+        entities: List of entity dicts (must contain entity_path and entity_hash)
+        prim_snapshots_by_entity: {entity_path: [snap, ...]} (unused in hash
+                                   computation but kept for API symmetry)
+
+    Returns:
+        List of mismatch dicts: [{"entity_path": ..., "expected_hash": ...,
+                                  "actual_hash": ...}, ...]
+    """
+    mismatches = []
+    root_layer = stage.GetRootLayer()
+    if not root_layer:
+        return mismatches
+
+    for entity in entities:
+        ep = entity.get("entity_path", "")
+        expected_hash = entity.get("entity_hash", "")
+        if not ep or not expected_hash:
+            continue
+
+        # Collect current overrides for this entity from the root layer
+        current_overrides = {}
+        _collect_layer_overrides_recursive(root_layer, ep, current_overrides)
+
+        # Compute per-prim hashes then entity hash (must match usd_parser.py)
+        all_prim_hashes = []
+        for props in current_overrides.values():
+            props_json = json.dumps(props, sort_keys=True, default=str)
+            prim_hash = hashlib.sha256(props_json.encode()).hexdigest()[:16]
+            all_prim_hashes.append(prim_hash)
+
+        actual_hash = hashlib.sha256(
+            "".join(sorted(all_prim_hashes)).encode()
+        ).hexdigest()[:16]
+
+        if actual_hash != expected_hash:
+            mismatches.append({
+                "entity_path": ep,
+                "expected_hash": expected_hash,
+                "actual_hash": actual_hash,
+            })
+
+    return mismatches
 
 
 # ═══════════════════════════════════════════════════════════════════════

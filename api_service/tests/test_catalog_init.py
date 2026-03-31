@@ -100,7 +100,7 @@ class TestTableDef:
         assert sample_table.fqn == "test_ns.test_table"
 
     def test_trino_fqn(self, sample_table: TableDef):
-        assert sample_table.trino_fqn == "iceberg.test_ns.test_table"
+        assert sample_table.trino_fqn == "polaris.test_ns.test_table"
 
     def test_column_names(self, sample_table: TableDef):
         assert sample_table.column_names() == ["id", "value", "ts"]
@@ -108,7 +108,7 @@ class TestTableDef:
     def test_trino_ddl_contains_create(self, sample_table: TableDef):
         ddl = sample_table.to_trino_ddl()
         assert "CREATE TABLE IF NOT EXISTS" in ddl
-        assert "iceberg.test_ns.test_table" in ddl
+        assert "polaris.test_ns.test_table" in ddl
 
     def test_trino_ddl_contains_columns(self, sample_table: TableDef):
         ddl = sample_table.to_trino_ddl()
