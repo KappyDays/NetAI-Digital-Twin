@@ -10,8 +10,8 @@
 # -------------------------------------------------------------------
 set -e
 
-TEMPLATE="/etc/trino/catalog/iceberg.properties.template"
-OUTPUT="/etc/trino/catalog/iceberg.properties"
+TEMPLATE="/etc/trino/catalog/polaris.properties.template"
+OUTPUT="/etc/trino/catalog/polaris.properties"
 
 # Provide defaults so substitution never produces empty values
 POLARIS_CREDENTIAL="${POLARIS_CREDENTIAL:-root:s3cr3t00}"

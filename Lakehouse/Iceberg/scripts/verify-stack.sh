@@ -53,7 +53,7 @@ POLARIS_HEALTH="${POLARIS_HEALTH:-http://localhost:8182/q/health}"
 TRINO_URL="${TRINO_URL:-http://localhost:8900}"
 API_URL="${API_URL:-http://localhost:8100}"
 S3_BUCKET="${S3_BUCKET:-warehouse2}"
-ICEBERG_NAMESPACE="${ICEBERG_NAMESPACE:-static_db}"
+ICEBERG_NAMESPACE="${ICEBERG_NAMESPACE:-netai}"
 
 echo ""
 echo "============================================================"
@@ -185,10 +185,10 @@ TRINO_CATALOGS=$(curl -sf -X POST "${TRINO_URL}/v1/statement" \
     -H "X-Trino-User: verify" \
     -d "SHOW CATALOGS" 2>/dev/null || echo "FAILED")
 
-if echo "$TRINO_CATALOGS" | grep -q "iceberg"; then
-    pass "Iceberg catalog is registered in Trino"
+if echo "$TRINO_CATALOGS" | grep -q "polaris"; then
+    pass "Polaris catalog is registered in Trino"
 else
-    warn "Could not confirm Iceberg catalog (may need async fetch)"
+    warn "Could not confirm Polaris catalog (may need async fetch)"
 fi
 
 echo ""

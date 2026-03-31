@@ -20,8 +20,7 @@ class Settings(BaseSettings):
     polaris_credential: str = "root:s3cr3t00"
     polaris_scope: str = "PRINCIPAL_ROLE:ALL"
     iceberg_warehouse: str = "iceberg2"
-    iceberg_namespace: str = "static_db"
-    iceberg_table_name: str = "static_prims"
+    iceberg_namespace: str = "netai"
 
     # ── S3 / MinIO ──────────────────────────────────────────────────
     s3_endpoint: str = "http://minio:9000"
@@ -35,7 +34,7 @@ class Settings(BaseSettings):
     trino_host: str = "trino"
     trino_port: int = 8080
     trino_user: str = "trino"
-    trino_catalog: str = "iceberg"
+    trino_catalog: str = "polaris"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

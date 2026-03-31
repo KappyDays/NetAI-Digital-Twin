@@ -114,8 +114,8 @@ services:
     networks:
       - iceberg_net
     volumes:
-      - ./trino/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties
-      - ./trino/catalog/iceberg.properties.template:/etc/trino/catalog/iceberg.properties.template
+      - ./trino/catalog/polaris.properties:/etc/trino/catalog/polaris.properties
+      - ./trino/catalog/polaris.properties.template:/etc/trino/catalog/polaris.properties.template
       - ./trino/init-catalog.sh:/opt/trino-init/init-catalog.sh
       # Named volume replaces ${USER_DATA_PATH} bind mount for Windows compat.
       # On Linux, override via docker-compose.override.yml if host path needed.
@@ -149,7 +149,6 @@ services:
       - POLARIS_SCOPE=PRINCIPAL_ROLE:ALL
       - ICEBERG_WAREHOUSE=${ICEBERG_WAREHOUSE}
       - ICEBERG_NAMESPACE=${ICEBERG_NAMESPACE}
-      - ICEBERG_TABLE_NAME=${ICEBERG_TABLE_NAME}
       # -- S3 / MinIO --
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=${S3_BUCKET}
@@ -160,7 +159,7 @@ services:
       # -- Trino --
       - TRINO_HOST=trino
       - TRINO_PORT=8080
-      - TRINO_CATALOG=iceberg
+      - TRINO_CATALOG=polaris
     networks:
       - iceberg_net
     depends_on:
@@ -178,7 +177,20 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # 5. Web Dashboard (React SPA + nginx reverse proxy)
+  # 5. Nucleus Pipeline (USD -> Iceberg, optional)
+  # Linux only: network_mode host required for Nucleus access
+  # Run with: docker compose --profile nucleus run nucleus-pipeline --local-path /data/scene.usda
+  nucleus-pipeline:
+    build:
+      context: ../../nucleus_pipeline
+    network_mode: host
+    profiles: ["nucleus"]
+    environment:
+      - LAKEHOUSE_API_URL=${LAKEHOUSE_API_URL:-http://localhost:8100}
+      - NUCLEUS_TOKEN=${NUCLEUS_TOKEN:-}
+    restart: "no"
+
+  # 6. Web Dashboard (React SPA + nginx reverse proxy)
   dashboard:
     build:
       context: ../../dashboard

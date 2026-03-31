@@ -12,7 +12,7 @@
 #   POLARIS_ROOT_CLIENT_ID   — Bootstrap principal client ID
 #   POLARIS_ROOT_CLIENT_SECRET — Bootstrap principal secret
 #   ICEBERG_WAREHOUSE        — Warehouse name (default: iceberg2)
-#   ICEBERG_NAMESPACE        — Default namespace (default: static_db)
+#   ICEBERG_NAMESPACE        — Default namespace (default: netai)
 #   S3_BUCKET                — S3 bucket for warehouse data
 #   AWS_REGION               — AWS region (default: us-east-1)
 # =============================================================================
@@ -22,7 +22,7 @@ POLARIS_URL="${POLARIS_URL:-http://polaris:8181}"
 POLARIS_ROOT_CLIENT_ID="${POLARIS_ROOT_CLIENT_ID:-root}"
 POLARIS_ROOT_CLIENT_SECRET="${POLARIS_ROOT_CLIENT_SECRET:-s3cr3t00}"
 ICEBERG_WAREHOUSE="${ICEBERG_WAREHOUSE:-iceberg2}"
-ICEBERG_NAMESPACE="${ICEBERG_NAMESPACE:-static_db}"
+ICEBERG_NAMESPACE="${ICEBERG_NAMESPACE:-netai}"
 S3_BUCKET="${S3_BUCKET:-warehouse2}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 MAX_RETRIES="${MAX_RETRIES:-30}"
@@ -142,30 +142,11 @@ else
     }" || echo "[init-polaris] WARNING: Namespace creation returned non-zero (may already exist)"
 fi
 
-# ─── Create Dynamic objects namespace ────────────────────────────────────────
-DYNAMIC_NS="dynamic_db"
-echo "[init-polaris] Checking namespace '${DYNAMIC_NS}'..."
-
-DNS_EXISTS=$(polaris_api GET "${API_BASE}/v1/${ICEBERG_WAREHOUSE}/namespaces/${DYNAMIC_NS}" || echo "")
-
-if echo "$DNS_EXISTS" | grep -q '"namespace"'; then
-    echo "[init-polaris] Namespace '${DYNAMIC_NS}' already exists — skipping"
-else
-    echo "[init-polaris] Creating namespace '${DYNAMIC_NS}'..."
-    polaris_api POST "${API_BASE}/v1/${ICEBERG_WAREHOUSE}/namespaces" "{
-        \"namespace\": [\"${DYNAMIC_NS}\"],
-        \"properties\": {
-            \"location\": \"s3://${S3_BUCKET}/${DYNAMIC_NS}/\",
-            \"description\": \"Per-object dynamic sensor data tables\"
-        }
-    }" || echo "[init-polaris] WARNING: Dynamic namespace creation returned non-zero"
-fi
-
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "[init-polaris] ======================================"
 echo "[init-polaris]  Catalog initialization complete"
 echo "[init-polaris]  Warehouse : ${ICEBERG_WAREHOUSE}"
-echo "[init-polaris]  Namespaces: ${ICEBERG_NAMESPACE}, ${DYNAMIC_NS}"
+echo "[init-polaris]  Namespace : ${ICEBERG_NAMESPACE}"
 echo "[init-polaris]  S3 Bucket : ${S3_BUCKET}"
 echo "[init-polaris] ======================================"

@@ -159,7 +159,7 @@ POLARIS_ROOT_CLIENT_SECRET=s3cr3t00
 
 # Iceberg
 ICEBERG_WAREHOUSE=iceberg2
-ICEBERG_NAMESPACE=static_db
+ICEBERG_NAMESPACE=netai
 ICEBERG_TABLE_NAME=static_prims
 
 # Trino (optional, only if USER_DATA_PATH is used)
@@ -185,7 +185,7 @@ chmod +x scripts/*.sh start.sh
 | 0-10s | MinIO starts, healthcheck begins |
 | 10-15s | minio-init creates buckets (`warehouse2`, `usd-assets`) |
 | 15-30s | Polaris starts, healthcheck begins |
-| 30-40s | polaris-init creates warehouse + namespaces (`static_db`, `dynamic_db`) |
+| 30-40s | polaris-init creates warehouse + namespaces (`netai`, `dynamic_db`) |
 | 30-60s | Trino starts, loads Iceberg catalog |
 | 15-30s | lakehouse-api builds, bootstraps Iceberg schema |
 | 10-20s | dashboard (nginx) starts |
@@ -279,7 +279,7 @@ Expected:
 ```json
 {
     "inserted": 3,
-    "table": "static_db.static_prims",
+    "table": "netai.static_prims",
     "message": "Successfully inserted 3 static prim records"
 }
 ```
@@ -289,7 +289,7 @@ Expected:
 ```bash
 curl -s -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT space_id, prim_path, prim_type FROM iceberg.static_db.static_prims LIMIT 10"}' \
+  -d '{"sql": "SELECT space_id, prim_path, prim_type FROM iceberg.netai.static_prims LIMIT 10"}' \
   | python3 -m json.tool
 ```
 
@@ -409,7 +409,7 @@ curl -sf -X POST ${API}/api/v1/prims \
 echo "=== Step 2: Query via Trino ==="
 curl -sf -X POST ${API}/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql":"SELECT * FROM iceberg.static_db.static_prims WHERE space_id='\''TestSpace'\''"}' \
+  -d '{"sql":"SELECT * FROM iceberg.netai.static_prims WHERE space_id='\''TestSpace'\''"}' \
   | python3 -m json.tool
 
 echo "=== Step 3: Ingest Dynamic Data ==="
