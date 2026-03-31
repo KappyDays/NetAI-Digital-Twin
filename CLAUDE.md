@@ -32,42 +32,74 @@ chmod +x scripts/*.sh start.sh
 | Lakehouse API | 8100 | FastAPI middleware (mapped from 8000) |
 | Dashboard | 3000 | React web dashboard (nginx) |
 
+**Trino naming:**
+- Catalog: `polaris` (Trino properties file: `trino/catalog/polaris.properties`)
+- Namespace: `netai`
+- Tables: `polaris.netai.entities`, `polaris.netai.prim_snapshots`, `polaris.netai.raw_backup_files`
+
 ### 2. API Service (FastAPI Middleware)
 
-Located at `api_service/`. Bridges Isaac Sim extensions to the Iceberg Lakehouse.
+Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to the Iceberg Lakehouse.
 
 **Key endpoints:**
-- `GET /health` — Deep health check with dependency status
 - `GET /api/v1/health` — Lightweight health check
-- `POST /api/v1/prims` — Insert static Prim records (Iceberg)
-- `POST /api/v1/dynamic/ingest` — Ingest dynamic object IoT data (per-object Iceberg tables)
-- `POST /api/v1/upload-usd` — Upload USD files (MinIO/S3)
 - `POST /api/v1/query` — Ad-hoc Trino SQL query
-- `GET /api/v1/spaces/congestion/summary` — Space congestion aggregation
-- `GET /api/v1/dynamic/query/latest` — Latest dynamic object states
+- `POST /api/v1/upload-usd` — Upload USD files (MinIO/S3)
+- `POST /api/v1/entities/backup` — Entity + Prim snapshot backup
+- `GET /api/v1/entities/backup-times` — List backup timestamps
+- `GET /api/v1/entities/list?backup_time=T` — List entities at timestamp
+- `GET /api/v1/entities/diff?time_a=T1&time_b=T2` — Entity-level diff
+- `GET /api/v1/entities/{path}/prim-diff?time_a=T1&time_b=T2` — Prim-level diff
+- `GET /api/v1/entities/{path}/restore?backup_time=T` — Single entity restore data
+- `GET /api/v1/entities/restore-all?backup_time=T` — All entities restore data
+- `POST /api/v1/raw-backup/files` — Raw backup file metadata insert
+- `GET /api/v1/raw-backup/times` — Raw backup timestamps
+- `GET /api/v1/raw-backup/diff?time_a=T1&time_b=T2` — Raw file diff
 
-### 3. Omniverse Extension (Isaac Sim)
+### 3. Nucleus Pipeline (CLI)
 
-`Omniverse/omniverse-extensions/lakehouse.proto/` — the only extension in this branch.
+`nucleus_pipeline/` — Python CLI for Nucleus server backup operations.
 
-**Extension structure:** `config/extension.toml` (metadata), `extension.py` (boilerplate), `ui_builder.py` (UI + logic), `global_variables.py` (constants).
+**Two modes:**
+- **Task 1 (Raw Backup):** `python main.py --raw-backup --nucleus-folder <URI>` — Incremental folder backup to MinIO with Iceberg metadata tracking
+- **Task 2 (Entity Backup):** `python main.py --nucleus-path <URI>` — Extract root layer overrides from USD, store Entity/Prim snapshots in Iceberg
 
-**Two tasks:**
-- Task 1: Scans all Stage Prims and inserts to Iceberg via `POST /api/v1/prims`
-- Task 2: Exports /World child Prims as USD files and uploads via `POST /api/v1/upload-usd`
+**Dependencies:** `pxr` (OpenUSD), `omni.client` (Nucleus). Runs as subprocess to avoid DLL conflicts.
 
-API URL configurable via `LAKEHOUSE_API_URL` env var (default: `http://lakehouse-api:8000`).
-Omniverse extensions use `urllib` only (no external pip packages inside Isaac Sim).
+### 4. Omniverse Extensions (Isaac Sim)
 
-### 4. Web Dashboard
+`Omniverse/omniverse-extensions/` — Isaac Sim 5.1.0 Extensions.
 
-`dashboard/` — React SPA (Vite) with congestion heatmap, time-series charts, and Trino SQL interface. Served via nginx reverse proxy on port 3000.
+**KKR.Lakehouse** (`lakehouse.proto/`):
+- Task 1: Scans all Stage Prims → Iceberg
+- Task 2: Exports /World Prims as USD → MinIO
+
+**KKR.TimeTravel** (`time.travel/`):
+- Stage/Entity restore from Iceberg backup timestamps
+- 3 restore modes: Changes Only / Full Entity / Full All
+- Undo (memory snapshot) + Nucleus Reopen
+- API URL preset: Local (`localhost:8100`) / Docker (`lakehouse-api:8000`)
+
+**Extension conventions:**
+- Menu: Tools > KKR-Tools submenu
+- stdlib only (`urllib`, no pip packages inside Isaac Sim)
+- API URL configurable via `LAKEHOUSE_API_URL` env var
+
+### 5. Web Dashboard
+
+`dashboard/` — React SPA (Vite) with Entity Diff viewer, Raw Backup explorer, and Trino SQL interface. Served via nginx reverse proxy on port 3000.
 
 ## Data Flow
 
 ```
-Isaac Sim (lakehouse.proto) -> Lakehouse API (FastAPI:8100) -> Polaris/Iceberg (metadata)
-                                                             -> MinIO/S3 (USD files)
+Nucleus Pipeline (Task 1) -> Lakehouse API (:8100) -> MinIO/S3 (raw files)
+                                                    -> Iceberg (raw_backup_files)
+
+Nucleus Pipeline (Task 2) -> Lakehouse API (:8100) -> Iceberg (entities + prim_snapshots)
+                                                    -> MinIO/S3 (USD files)
+
+Isaac Sim (KKR.TimeTravel) -> Lakehouse API (:8100) -> Iceberg (read backup data)
+                                                     -> Stage (apply overrides)
 
 Trino (SQL:8900) -> Polaris REST Catalog -> MinIO/S3 (Iceberg tables)
 
@@ -77,7 +109,7 @@ Web Dashboard (:3000) -> nginx -> Lakehouse API (:8100) -> Trino -> Iceberg
 ## Testing
 
 ```bash
-cd api_service && python -m pytest tests/ -v    # 576 tests, ~45s
+cd api_service && python -m pytest tests/ -v
 ```
 
 ## Key Conventions
@@ -97,3 +129,4 @@ cd api_service && python -m pytest tests/ -v    # 576 tests, ~45s
 - `docker-compose.yml` healthcheck overrides Dockerfile HEALTHCHECK — check both when debugging
 - Polaris `CATALOG_MANAGE_CONTENT` grant resets on container recreation — `init-polaris-catalog.sh` should re-grant
 - See `Lakehouse/Iceberg/DEPLOYMENT_GUIDE.md` for full server deployment guide
+- See `docs/E2E_SCENARIO_GUIDE.md` for Task 1/2/3 end-to-end scenario guide with Iceberg query examples
