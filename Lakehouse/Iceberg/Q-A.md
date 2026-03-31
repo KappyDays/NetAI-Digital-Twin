@@ -16,9 +16,9 @@
 **FastAPI**는 Python으로 REST API 서버를 빠르게 만들 수 있는 웹 프레임워크이다. 이 스택에서 FastAPI로 만든 서버를 "미들웨어"라고 부르는 이유는:
 
 ```
-Isaac Sim Extension (클라이언트)
+nucleus_pipeline / KKR.TimeTravel / Dashboard (클라이언트)
         │
-        │  HTTP 요청 (예: POST /api/v1/prims)
+        │  HTTP 요청 (예: POST /api/v1/entities/backup)
         ▼
 ┌─────────────────────────────┐
 │  FastAPI 미들웨어 (:8100)    │  ← 여기가 "미들웨어"
@@ -33,7 +33,7 @@ Isaac Sim Extension (클라이언트)
   Trino  Polaris MinIO  (내부 컴포넌트)
 ```
 
-클라이언트(Isaac Sim, 브라우저, curl)가 Trino/Polaris/MinIO에 직접 접근하는 대신, **FastAPI 서버가 중간에서 요청을 받아 적절한 내부 서비스로 라우팅**한다. 이것이 "미들웨어"로 불리는 이유이다.
+클라이언트(`nucleus_pipeline` CLI, `KKR.TimeTravel` Extension, 브라우저, curl)가 Trino/Polaris/MinIO에 직접 접근하는 대신, **FastAPI 서버가 중간에서 요청을 받아 적절한 내부 서비스로 라우팅**한다. 이것이 "미들웨어"로 불리는 이유이다.
 
 **왜 직접 접근하지 않고 미들웨어를 두는가?**
 - **단일 진입점**: 클라이언트는 `:8100` 하나만 알면 됨
@@ -136,18 +136,16 @@ Trino (쿼리 시 Polaris에 질의)
 Polaris 내부 저장 정보:
 ┌─────────────────────────────────────┐
 │ Catalog: iceberg2                    │
-│   ├── Namespace: netai           │
-│   │     └── Table: static_prims      │
-│   │           └── metadata-location: │
-│   │              "s3://warehouse2/netai/static_prims/metadata/v3.metadata.json"
-│   └── Namespace: dynamic_db          │
-│         └── Table: dynamic_worker_01 │
-│               └── metadata-location: │
-│                  "s3://warehouse2/dynamic_db/dynamic_worker_01/metadata/v1.metadata.json"
+│   └── Namespace: netai               │
+│         ├── Table: entities          │
+│         │     └── metadata-location: │
+│         │        "s3://warehouse2/netai/entities/metadata/v3.metadata.json"
+│         ├── Table: prim_snapshots    │
+│         └── Table: raw_backup_files  │
 └─────────────────────────────────────┘
 ```
 
-- Polaris는 **"static_prims 테이블의 최신 메타데이터 파일은 S3의 이 경로에 있다"**라는 포인터를 저장
+- Polaris는 **"entities 테이블의 최신 메타데이터 파일은 S3의 이 경로에 있다"**라는 포인터를 저장
 - 실제 메타데이터 파일(스키마 정보, 스냅샷 목록, 매니페스트 경로 등)은 **MinIO(S3)에 저장**된 Iceberg 포맷 파일
 - Polaris는 추가로 **네임스페이스 관리, OAuth2 인증, 접근 권한 제어** 등의 카탈로그 관리 기능을 수행
 
@@ -172,34 +170,31 @@ Lakehouse 스택의 계층 구조와 관계형 DB의 계층을 대응시키면:
 | Lakehouse (Polaris/Iceberg) | 관계형 DB (MySQL 등) | 이 스택에서의 값 |
 |----------------------------|---------------------|----------------|
 | **Warehouse (Catalog)** | Server Instance / Catalog | `iceberg2` |
-| **Namespace** | Database (Schema) | `netai`, `dynamic_db` |
-| **Table** | Table | `static_prims`, `dynamic_worker_01` |
+| **Namespace** | Database (Schema) | `netai` |
+| **Table** | Table | `entities`, `dynamic_worker_01` |
 
 ```
 iceberg2 (Warehouse = Catalog)
-    ├── netai (Namespace ≈ Database)
-    │     └── static_prims (Table)
-    └── dynamic_db (Namespace ≈ Database)
-          ├── dynamic_worker_01 (Table)
-          ├── dynamic_worker_02 (Table)
-          └── dynamic_robot_01 (Table)
+    └── netai (Namespace ≈ Database)
+          ├── entities (Table)
+          ├── prim_snapshots (Table)
+          └── raw_backup_files (Table)
 ```
-
-즉, **`iceberg2`는 데이터베이스가 아니라 그 위의 카탈로그**이고, **데이터베이스에 해당하는 것은 `netai`와 `dynamic_db`(Namespace)**이다.
+즉, **`iceberg2`는 데이터베이스가 아니라 그 위의 카탈로그**이고, **데이터베이스에 해당하는 것은 `netai`(Namespace)**이다.
 
 Trino에서 SQL을 쓸 때도 이 계층이 드러난다:
 ```sql
-SELECT * FROM iceberg.netai.static_prims
+SELECT * FROM polaris.netai.entities
 --           ───────  ─────────  ────────────
 --           Catalog  Namespace  Table
 --           (=Warehouse) (=DB)
 ```
 
-> **주의**: Trino에서 `iceberg`라고 쓰는 것은 Trino 커넥터 이름이다. Polaris의 Warehouse 이름 `iceberg2`와는 다르다. Trino 설정에서 `iceberg` 커넥터가 Polaris의 `iceberg2` Warehouse를 가리키도록 연결되어 있다.
+> **주의**: Trino에서 `polaris`라고 쓰는 것은 Trino 카탈로그(커넥터) 이름이다. Polaris의 Warehouse 이름 `iceberg2`와는 다르다. Trino 설정에서 `polaris` 카탈로그가 Polaris의 `iceberg2` Warehouse를 가리키도록 연결되어 있다.
 
 ---
 
-## Q6. Namespace: netai와 dynamic_db는 iceberg2 데이터베이스에 존재하는 table의 이름인가?
+## Q6. Namespace: netai는 iceberg2 데이터베이스에 존재하는 table의 이름인가?
 
 ### 짧은 답변
 
@@ -212,29 +207,23 @@ Q5에서 정리한 계층 구조를 다시 보면:
 ```
 iceberg2 (Warehouse/Catalog) — "데이터베이스"가 아님
     │
-    ├── netai (Namespace) — "테이블"이 아니라 테이블을 담는 "그룹(=DB)"
-    │     └── static_prims    — 이것이 실제 테이블
-    │
-    └── dynamic_db (Namespace) — 마찬가지로 테이블 그룹
-          ├── dynamic_worker_01  — 실제 테이블
-          ├── dynamic_worker_02  — 실제 테이블
-          └── dynamic_robot_01   — 실제 테이블
+    └── netai (Namespace) — "테이블"이 아니라 테이블을 담는 "그룹(=DB)"
+          ├── entities           — 실제 테이블 (Entity 메타데이터)
+          ├── prim_snapshots     — 실제 테이블 (Sub-Prim 스냅샷)
+          └── raw_backup_files   — 실제 테이블 (Raw Backup 파일 메타데이터)
 ```
 
-- `netai` = 정적 Prim 데이터를 담는 **네임스페이스(≈ 데이터베이스)**
-- `dynamic_db` = 동적 IoT/센서 데이터를 담는 **네임스페이스(≈ 데이터베이스)**
-- 이 안에 들어 있는 `static_prims`, `dynamic_worker_01` 등이 **실제 테이블**
+- `netai` = Entity 백업/복원 데이터를 담는 **네임스페이스(≈ 데이터베이스)**
+- 이 안에 들어 있는 `entities`, `prim_snapshots`, `raw_backup_files` 등이 **실제 테이블**
 
 Trino 명령으로 확인하면:
 ```sql
-SHOW SCHEMAS FROM iceberg;
--- 결과: netai, dynamic_db  ← 이것이 Namespace(≈ DB)
+SHOW SCHEMAS FROM polaris;
+-- 결과: netai  ← 이것이 Namespace(≈ DB)
 
-SHOW TABLES FROM iceberg.netai;
--- 결과: static_prims            ← 이것이 테이블
+SHOW TABLES FROM polaris.netai;
+-- 결과: entities            ← 이것이 테이블
 
-SHOW TABLES FROM iceberg.dynamic_db;
--- 결과: dynamic_worker_01, dynamic_robot_01, ...  ← 이것들이 테이블
 ```
 
 ---
@@ -309,27 +298,27 @@ async def insert_prims(records: List[PrimRecord]):
 |------|------|------|------|
 | `warehouse2` | **MinIO Bucket** | MinIO (S3 스토리지) | 실제 데이터 파일(Parquet, metadata JSON)이 저장되는 물리적 컨테이너 |
 | `iceberg2` | **Polaris Warehouse (Catalog)** | Polaris (카탈로그 서비스) | 테이블 메타데이터 위치를 추적하는 논리적 카탈로그 |
-| `netai` / `dynamic_db` | **Namespace (≈ Database)** | Polaris 내부 (iceberg2 하위) | 테이블을 그룹화하는 논리적 단위 |
+| `netai` | **Namespace (≈ Database)** | Polaris 내부 (iceberg2 하위) | 테이블을 그룹화하는 논리적 단위 |
 
 이들의 관계:
 
 ```
 Polaris (카탈로그 서비스)
     └── iceberg2 (Warehouse/Catalog)
-            ├── netai (Namespace)
-            │     └── static_prims (Table)
-            │           metadata-location: "s3://warehouse2/netai/static_prims/metadata/..."
-            └── dynamic_db (Namespace)                    ──────────
-                                                          이 부분이 MinIO bucket 이름
+            └── netai (Namespace)
+                  └── entities (Table)
+                        metadata-location: "s3://warehouse2/netai/entities/metadata/..."
+                                           ──────────
+                                           이 부분이 MinIO bucket 이름
 
 MinIO (스토리지)
     └── warehouse2 (Bucket) ← 물리적 저장소
             ├── netai/
-            │     └── static_prims/
-            │           ├── metadata/    ← Iceberg 메타데이터 파일
-            │           └── data/        ← Parquet 데이터 파일
-            ├── dynamic_db/
-            │     └── dynamic_worker_01/
+            │     ├── entities/
+            │     │     ├── metadata/    ← Iceberg 메타데이터 파일
+            │     │     └── data/        ← Parquet 데이터 파일
+            │     ├── prim_snapshots/
+            │     └── raw_backup_files/
             └── usd/
                   └── world_prims/       ← USD 파일
 ```
@@ -372,11 +361,11 @@ ICEBERG_NAMESPACE = netai   → Polaris Namespace (≈ DB)
 
 | Iceberg 기능 | 설명 | Trino SQL 예시 |
 |-------------|------|---------------|
-| **Schema Evolution** | 테이블 스키마를 무중단으로 변경 (컬럼 추가/삭제/이름변경/타입변경). 기존 데이터에 영향 없음 | `ALTER TABLE iceberg.netai.static_prims ADD COLUMN color VARCHAR` |
+| **Schema Evolution** | 테이블 스키마를 무중단으로 변경 (컬럼 추가/삭제/이름변경/타입변경). 기존 데이터에 영향 없음 | `ALTER TABLE polaris.netai.entities ADD COLUMN color VARCHAR` |
 | **Partition Evolution** | 기존 데이터 재작성 없이 파티션 전략 변경 | `ALTER TABLE ... SET PROPERTIES partitioning = ARRAY['month(timestamp)']` |
-| **Snapshot Management** | 테이블의 모든 변경 이력을 스냅샷으로 보존. 특정 시점으로 롤백 가능 | `SELECT * FROM iceberg.netai.static_prims FOR TIMESTAMP AS OF TIMESTAMP '2026-03-23 12:00:00'` |
-| **Time Travel** | 과거 특정 시점의 데이터를 조회 | `SELECT * FROM "static_prims$snapshots"` |
-| **Metadata Tables** | 스냅샷, 매니페스트, 히스토리 등 메타데이터를 SQL로 조회 | `SELECT * FROM "static_prims$history"` |
+| **Snapshot Management** | 테이블의 모든 변경 이력을 스냅샷으로 보존. 특정 시점으로 롤백 가능 | `SELECT * FROM polaris.netai.entities FOR TIMESTAMP AS OF TIMESTAMP '2026-03-23 12:00:00'` |
+| **Time Travel** | 과거 특정 시점의 데이터를 조회 | `SELECT * FROM "entities$snapshots"` |
+| **Metadata Tables** | 스냅샷, 매니페스트, 히스토리 등 메타데이터를 SQL로 조회 | `SELECT * FROM "entities$history"` |
 | **Compaction** | 작은 파일들을 큰 파일로 병합하여 쿼리 성능 향상 | `ALTER TABLE ... EXECUTE optimize` |
 | **Expire Snapshots** | 오래된 스냅샷을 정리하여 스토리지 절약 | `ALTER TABLE ... EXECUTE expire_snapshots(retention_threshold => '7d')` |
 | **Hidden Partitioning** | 사용자가 파티션을 의식하지 않아도 쿼리 최적화가 자동으로 적용 | 파티셔닝 설정 후 일반 WHERE 절 사용 |
@@ -422,25 +411,25 @@ ICEBERG_FEATURES_GUIDE.md
 ──────────────────────────────
 MinIO
   └── warehouse2 (Bucket) ← 실제 파일이 여기에 저장
-        ├── netai/static_prims/data/*.parquet     ← 데이터
-        ├── netai/static_prims/metadata/*.json    ← 메타데이터
+        ├── netai/entities/data/*.parquet     ← 데이터
+        ├── netai/entities/metadata/*.json    ← 메타데이터
         └── usd/world_prims/*.usda                    ← USD 파일
 
 논리 계층 (어떻게 조직되나?)
 ──────────────────────────────
 Polaris (카탈로그 서비스)
   └── iceberg2 (Warehouse = Catalog)
-        ├── netai (Namespace ≈ Database)
-        │     └── static_prims (Table)
-        └── dynamic_db (Namespace ≈ Database)
-              └── dynamic_worker_01 (Table)
+        └── netai (Namespace ≈ Database)
+        │     └── entities (Table)
+              ├── entities (Table)
+              ├── prim_snapshots (Table)
+              └── raw_backup_files (Table)
 
 접근 계층 (어떻게 사용하나?)
 ──────────────────────────────
 Trino (SQL 엔진)
-  └── iceberg (Connector 이름, Polaris의 iceberg2에 연결)
-        ├── netai (Schema = Namespace)
-        └── dynamic_db (Schema = Namespace)
+  └── polaris (카탈로그 이름, Polaris의 iceberg2에 연결)
+        └── netai (Schema = Namespace)
 ```
 
 #### 이름 대응표
@@ -451,7 +440,7 @@ Trino (SQL 엔진)
 | `iceberg2` | 논리 | Polaris Catalog (Warehouse) | 서버 인스턴스 |
 | `iceberg` | 접근 | Trino Connector 이름 | JDBC 연결 이름 |
 | `netai` | 논리 | Namespace | 데이터베이스(스키마) |
-| `static_prims` | 논리 | Table | 테이블 |
+| `entities` | 논리 | Table | 테이블 |
 
 **핵심**: `warehouse2`(물리) ≠ `iceberg2`(논리 카탈로그) ≠ `iceberg`(Trino 커넥터). 셋은 서로 다른 계층에 있는 별개의 이름이다.
 

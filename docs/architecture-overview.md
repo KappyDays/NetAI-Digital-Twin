@@ -27,7 +27,7 @@
            ▼                                                          │
  ┌─────────────────────────────────┐                                  │
  │    Omniverse Nucleus Server     │                                  │
- │    (omniverse://10.38.38.32)    │                                  │
+ │    (omniverse://10.38.38.48)    │                                  │
  │                                 │                                  │
  │  /Projects/                     │                                  │
  │   └── scene.usd  ◀─ 최상위     │                                  │
@@ -105,7 +105,8 @@
               │  - Entity Diff      │
               │    (3-Level 비교)    │
               │  - SQL Query        │
-              │  - Congestion Map   │
+              │  - Raw Backup       │
+              │    Explorer         │
               └─────────────────────┘
 ```
 
@@ -183,40 +184,49 @@
    └──────────┘                              └──────────────┘
 ```
 
-## Two Backup Paths (Extension vs Pipeline)
+## Task 구성: Backup + Restore
 
 ```
-   ┌─────────────────────────────┐     ┌─────────────────────────────┐
-   │   Path A: Isaac Sim 내부     │     │  Path B: Nucleus Pipeline   │
-   │   (Extension 기반)           │     │  (CLI 기반)                 │
-   ├─────────────────────────────┤     ├─────────────────────────────┤
-   │                             │     │                             │
-   │  Isaac Sim 실행 중 필요      │     │  Isaac Sim 불필요           │
-   │  실시간 인터랙티브           │     │  서버에서 자동화 가능        │
-   │                             │     │                             │
-   │  Stage.Traverse()           │     │  Nucleus에서 USD 다운로드    │
-   │  → composed 전체 속성 추출   │     │  → override만 추출          │
-   │  → Iceberg에 저장           │     │  → root.usda 생성           │
-   │                             │     │  → Entity USD 다운로드       │
-   │  backup_source: "extension" │     │  → MinIO + Iceberg 저장     │
-   │                             │     │                             │
-   │  복원: Stage 내에서          │     │  backup_source: "nucleus"   │
-   │  Entity Reference 재설정    │     │  또는 "local"               │
-   │  + Override 적용            │     │                             │
-   │                             │     │  복원: MinIO에서 다운로드     │
-   │                             │     │  → Isaac Sim에서 Open       │
-   └─────────────────────────────┘     └─────────────────────────────┘
-               │                                    │
-               └──────────────┬─────────────────────┘
-                              │
-                              ▼
-                 ┌───────────────────────┐
-                 │    Iceberg Lakehouse  │
-                 │                       │
-                 │  - entities table     │
-                 │  - prim_snapshots     │
-                 │  - backup_source로    │
-                 │    소스 구분          │
-                 │  - SQL 타임트래블    │
-                 └───────────────────────┘
+   ┌──────────────────────────────────┐     ┌──────────────────────────────────────────┐
+   │  Path A: Task 3                  │     │  Path B: Nucleus Pipeline (CLI 기반)     │
+   │  Isaac Sim 내부 복원             │     │                                          │
+   │  (KKR.TimeTravel Extension)      │     │  ┌──────────────────────────────────┐   │
+   ├──────────────────────────────────┤     │  │  Task 1: Raw Backup              │   │
+   │                                  │     │  ├──────────────────────────────────┤   │
+   │  Isaac Sim 실행 중 사용          │     │  │  Nucleus 폴더 전체를 MinIO에      │   │
+   │  Iceberg에서 백업 데이터 조회    │     │  │  증분 백업 + Iceberg 메타데이터  │   │
+   │  Stage에 Override 적용           │     │  │  기록                            │   │
+   │                                  │     │  │                                  │   │
+   │  3가지 복원 모드:                │     │  │  python main.py --raw-backup     │   │
+   │  - Changes Only (변경분만)       │     │  │    --nucleus-folder <URI>        │   │
+   │  - Full Entity (Entity 전체)     │     │  │                                  │   │
+   │  - Full All (전체 Stage)         │     │  │  → raw_backup_files 테이블       │   │
+   │                                  │     │  └──────────────────────────────────┘   │
+   │  Undo (메모리 스냅샷)            │     │                                          │
+   │  + Nucleus Reopen 지원           │     │  ┌──────────────────────────────────┐   │
+   │                                  │     │  │  Task 2: Entity Backup           │   │
+   │  API URL 설정:                   │     │  ├──────────────────────────────────┤   │
+   │  Local  localhost:8100           │     │  │  USD root layer override 추출    │   │
+   │  Docker lakehouse-api:8000       │     │  │  → Iceberg (entities,            │   │
+   │                                  │     │  │    prim_snapshots)               │   │
+   │                                  │     │  │  + MinIO (USD 파일)              │   │
+   │                                  │     │  │                                  │   │
+   │                                  │     │  │  python main.py                  │   │
+   │                                  │     │  │    --nucleus-path <URI>          │   │
+   │                                  │     │  │                                  │   │
+   │                                  │     │  │  → entities + prim_snapshots     │   │
+   │                                  │     │  └──────────────────────────────────┘   │
+   └──────────────────────────────────┘     └──────────────────────────────────────────┘
+               │                                            │
+               └────────────────────┬───────────────────────┘
+                                    │
+                                    ▼
+                       ┌───────────────────────┐
+                       │    Iceberg Lakehouse  │
+                       │                       │
+                       │  - entities table     │
+                       │  - prim_snapshots     │
+                       │  - raw_backup_files   │
+                       │  - SQL 타임트래블     │
+                       └───────────────────────┘
 ```

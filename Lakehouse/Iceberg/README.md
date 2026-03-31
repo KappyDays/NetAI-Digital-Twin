@@ -117,14 +117,14 @@ You can verify the installed software versions using the following commands:
       -H "Content-Type: application/json" \
       -d '{
         "catalog": {
-          "name": "iceberg",
+          "name": "polaris",
           "type": "INTERNAL",
           "storageConfigInfo": {
             "storageType": "S3",
-            "allowedLocations": ["s3://warehouse/"]
+            "allowedLocations": ["s3://warehouse2/"]
           },
           "properties": {
-            "default-base-location": "s3://warehouse/"
+            "default-base-location": "s3://warehouse2/"
           }
         }
       }'
@@ -140,16 +140,23 @@ You can verify the installed software versions using the following commands:
 
     ```sql
     -- Inside Trino CLI
+    -- Smoke test: verify polaris catalog is accessible
     SHOW CATALOGS;
-    CREATE SCHEMA IF NOT EXISTS iceberg.db;
-    CREATE TABLE IF NOT EXISTS iceberg.db.demo (id BIGINT, data VARCHAR);
-    INSERT INTO iceberg.db.demo VALUES (1, 'a'), (2, 'b');
-    SELECT * FROM iceberg.db.demo;
+    -- Expected: polaris should appear in the list
+
+    -- Verify netai namespace and tables exist (after lakehouse-api bootstrap)
+    SHOW TABLES FROM polaris.netai;
+    -- Expected: entities, prim_snapshots, raw_backup_files
+
+    -- Quick data check
+    SELECT COUNT(*) FROM polaris.netai.entities;
     ```
+
+    > **참고**: 위 쿼리는 `lakehouse-api` 컨테이너가 완전히 기동되어 스키마 초기화를 완료한 후 실행해야 합니다.
 
 7.  **Monitor Trino Queries**
 
-      - Access the Trino Web UI: http://localhost:8443
+      - Access the Trino Web UI: http://localhost:8900
 
 8.  **Verify data in MinIO Console**
 
@@ -158,3 +165,18 @@ You can verify the installed software versions using the following commands:
 
 > [!NOTE]
 > The MinIO data is stored in the `minio_data` folder within the directory where the Docker Compose command is executed, so the data is preserved even if the containers are removed and restarted.
+
+---
+
+## Lakehouse API & E2E Guide
+
+The **Lakehouse API** (FastAPI middleware) runs at `http://localhost:8100` and provides all data access endpoints:
+
+```bash
+curl http://localhost:8100/api/v1/health
+```
+
+For full Task 1/2/3 end-to-end scenarios (nucleus_pipeline raw backup, entity backup, and KKR.TimeTravel restore), see:
+- **[DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md)** — Server deployment and verification
+- **[ENTITY_BACKUP_TEST_GUIDE.md](./ENTITY_BACKUP_TEST_GUIDE.md)** — Entity backup/restore test guide
+- **[docs/E2E_SCENARIO_GUIDE.md](../../docs/E2E_SCENARIO_GUIDE.md)** — Task 1/2/3 end-to-end scenario guide

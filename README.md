@@ -5,26 +5,32 @@ Network AI Digital Twin 플랫폼 — **Iceberg Lakehouse** 데이터 인프라 
 ## Architecture
 
 ```
-                        ┌─────────────────────┐
-                        │  Isaac Sim (Extension)│
-                        │  lakehouse.proto     │
-                        └──────────┬──────────┘
-                                   │ HTTP (urllib)
-                                   ▼
-┌──────────────┐    ┌──────────────────────────┐    ┌──────────────────┐
-│ Nucleus      │    │   Lakehouse API (FastAPI) │    │  Web Dashboard   │
-│ Pipeline     │───▶│        :8100              │◀───│  (React) :3000   │
-│ (CLI/Python) │    └──────┬───────┬───────┬────┘    └──────────────────┘
-└──────────────┘           │       │       │
-                    ┌──────▼──┐ ┌──▼──┐ ┌──▼──────────┐
-                    │  Trino  │ │MinIO│ │   Polaris    │
-                    │  :8900  │ │:9000│ │   :8181      │
-                    │  (SQL)  │ │(S3) │ │ (REST Catalog)│
-                    └─────────┘ └─────┘ └──────────────┘
-                         │         │           │
-                         └─────────┴───────────┘
-                            Iceberg Tables
-                          (Parquet on MinIO)
+┌──────────────────────────┐    ┌──────────────────────────┐
+│  Nucleus Pipeline (Task 1│    │  Nucleus Pipeline (Task 2)│
+│  Raw Backup CLI)         │    │  Entity Backup CLI)       │
+└───────────┬──────────────┘    └───────────┬──────────────┘
+            │ POST /api/v1/raw-backup/files  │ POST /api/v1/entities/backup
+            │                               │ POST /api/v1/upload-usd
+            ▼                               ▼
+┌───────────────────────────────────────────────────────────┐
+│                   Lakehouse API (FastAPI) :8100            │
+└──────────┬───────────────┬──────────────────┬─────────────┘
+           │               │                  │
+    ┌──────▼──┐       ┌────▼───┐     ┌────────▼──────┐
+    │  Trino  │       │ MinIO  │     │    Polaris     │
+    │  :8900  │       │ :9000  │     │    :8181       │
+    │  (SQL)  │       │  (S3)  │     │ (REST Catalog) │
+    └─────────┘       └────────┘     └───────────────┘
+           │               │                  │
+           └───────────────┴──────────────────┘
+                       Iceberg Tables
+                     (Parquet on MinIO)
+           ▲                               ▲
+           │ GET /api/v1/entities/*        │ fetch API
+┌──────────┴───────────────┐    ┌──────────┴───────────┐
+│  KKR.TimeTravel (Task 3) │    │  Web Dashboard :3000  │
+│  Isaac Sim Extension     │    │  (React + nginx)      │
+└──────────────────────────┘    └──────────────────────┘
 ```
 
 ## Quick Start
@@ -86,15 +92,11 @@ curl http://localhost:3000                    # Dashboard
 |--------|------|-------------|
 | `GET` | `/health` | Deep health check (dependency status 포함) |
 | `GET` | `/api/v1/health` | Lightweight health check |
-| `POST` | `/api/v1/prims` | Static Prim records 삽입 (Iceberg) |
-| `POST` | `/api/v1/dynamic/ingest` | Dynamic object IoT 데이터 삽입 |
 | `POST` | `/api/v1/upload-usd` | USD 파일 MinIO 업로드 (s3_key 지정 가능) |
 | `GET` | `/api/v1/download-usd?s3_key=...` | MinIO에서 USD 파일 다운로드 |
 | `POST` | `/api/v1/query` | Ad-hoc Trino SQL 실행 |
-| `GET` | `/api/v1/spaces/congestion/summary` | 공간 혼잡도 집계 |
-| `GET` | `/api/v1/dynamic/query/latest` | 최신 dynamic object 상태 |
 
-#### Entity Backup/Restore/Diff
+#### Entity Backup/Restore/Diff (Task 2)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -104,6 +106,15 @@ curl http://localhost:3000                    # Dashboard
 | `GET` | `/api/v1/entities/diff?time_a=...&time_b=...` | 두 시점 Entity 비교 |
 | `GET` | `/api/v1/entities/{path}/prim-diff?time_a=...&time_b=...` | Entity 내부 Prim 비교 |
 | `GET` | `/api/v1/entities/{path}/restore?backup_time=...` | Entity 복원 데이터 조회 |
+| `GET` | `/api/v1/entities/restore-all?backup_time=...` | 전체 Entity 복원 데이터 조회 |
+
+#### Raw Backup (Task 1)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/raw-backup/files` | Raw 백업 파일 메타데이터 삽입 |
+| `GET` | `/api/v1/raw-backup/times` | Raw 백업 시점 목록 |
+| `GET` | `/api/v1/raw-backup/diff?time_a=...&time_b=...` | 두 시점 Raw 파일 비교 |
 
 #### Test
 
@@ -116,7 +127,7 @@ python -m pytest tests/ -v    # 576 tests, ~45s
 
 ### 2. Nucleus Pipeline (CLI)
 
-`nucleus_pipeline/` — Isaac Sim 없이 Nucleus/로컬 USD 파일을 파싱하여 Iceberg에 백업하고, MinIO에 USD 파일을 저장하는 독립 CLI 도구.
+`nucleus_pipeline/` — Isaac Sim 없이 Nucleus 서버(10.38.38.48)와 통신하여 폴더/파일을 백업하는 독립 CLI 도구. 두 가지 모드로 동작한다.
 
 #### Install (Python 3.11 권장)
 
@@ -135,7 +146,18 @@ pip install -r requirements.txt
 pip install omniverseclient --extra-index-url https://pypi.nvidia.com
 ```
 
-#### Usage
+#### Task 1: Raw Backup (폴더 통째 백업)
+
+Nucleus 폴더 전체를 MinIO에 업로드하고, 파일 메타데이터를 Iceberg `raw_backup_files` 테이블에 기록. 증분(incremental) 방식으로 변경된 파일만 업로드.
+
+```bash
+# Nucleus 폴더 전체 Raw 백업
+python main.py --raw-backup --nucleus-folder omniverse://10.38.38.48/Projects/ --api-url http://localhost:8100
+```
+
+#### Task 2: Entity Backup (USD Layer 기반 백업)
+
+USD 파일의 Root Layer Override를 파싱하여 Entity + Prim 스냅샷을 Iceberg에 저장하고, USD 바이너리를 MinIO에 업로드.
 
 ```bash
 # 로컬 USD 파일 백업
@@ -152,14 +174,16 @@ python main.py --local-path ./scene.usda --api-url http://localhost:8100 --skip-
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `--local-path` | 로컬 USD/USDA 파일 경로 | — |
-| `--nucleus-path` | Nucleus 경로 (omniverse://...) | — |
+| `--raw-backup` | Task 1: Raw 폴더 백업 모드 활성화 | — |
+| `--nucleus-folder` | Task 1: 백업할 Nucleus 폴더 URI | — |
+| `--local-path` | Task 2: 로컬 USD/USDA 파일 경로 | — |
+| `--nucleus-path` | Task 2: Nucleus 경로 (omniverse://...) | — |
 | `--api-url` | Lakehouse API URL | `http://localhost:8100` |
 | `--nucleus-token` | Nucleus 인증 토큰 | env `NUCLEUS_TOKEN` |
 | `--backup-source` | 소스 라벨 (auto: local/nucleus) | 자동 감지 |
-| `--skip-usd-upload` | MinIO USD 업로드 건너뛰기 | false |
+| `--skip-usd-upload` | MinIO USD 업로드 건너뛰기 (Task 2) | false |
 
-#### What It Does
+#### Task 2: What It Does
 
 1. **Nucleus/로컬에서 USD 다운로드** — omniverseclient SDK로 `omniverse://` 파일 다운로드
 2. **Entity 식별** — Reference/Payload가 있는 Prim을 Entity로 인식, 컨테이너 Xform도 추적
@@ -167,7 +191,7 @@ python main.py --local-path ./scene.usda --api-url http://localhost:8100 --skip-
 4. **root.usda 생성** — Stage 전체 로컬 데이터를 복사하고 Reference 경로를 상대 경로로 재작성
 5. **Entity USD 다운로드** — 각 Entity의 원본 에셋을 Nucleus에서 다운로드 (중복 제거)
 6. **MinIO 업로드** — `backups/{timestamp}/root.usda` + `backups/{timestamp}/entities/*.usd`
-7. **Iceberg 저장** — Entity 메타데이터 + Override properties를 Iceberg 테이블에 저장
+7. **Iceberg 저장** — Entity 메타데이터 + Override properties를 `polaris.netai.entities` / `polaris.netai.prim_snapshots` 테이블에 저장
 
 #### MinIO Backup Structure
 
@@ -183,53 +207,34 @@ warehouse2/backups/
         └── basic_block.usd            ← Block_A + Block_B 공유
 ```
 
-#### Time Travel (타임트래블)
-
-```bash
-# 1. 백업 시점 조회
-curl http://localhost:8100/api/v1/entities/backup-times
-
-# 2. 특정 시점의 Entity override SQL 쿼리
-curl -X POST http://localhost:8100/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"sql":"SELECT entity_path, properties FROM iceberg.static_db.prim_snapshots WHERE backup_time = TIMESTAMP '\''2026-03-29 15:40:18.375'\'' ORDER BY entity_path"}'
-
-# 3. MinIO에서 복원용 root.usda 다운로드
-curl -o restored.usda "http://localhost:8100/api/v1/download-usd?s3_key=backups/2026-03-29_15-40-18.375/root.usda"
-
-# 4. Isaac Sim에서 Open → 해당 시점의 Stage 재현
-```
-
 ---
 
 ### 3. Web Dashboard (React)
 
-`dashboard/` — 6개 페이지로 구성된 React SPA (Vite + nginx).
+`dashboard/` — React SPA (Vite + nginx). 활성 페이지:
 
 | 페이지 | URL | Description |
 |--------|-----|-------------|
-| Congestion | http://localhost:3000/ | 공간 혼잡도 히트맵 + KPI + 시계열 차트 |
-| Static Objects | http://localhost:3000/static | Static Prim 데이터 브라우저 |
-| Dynamic Objects | http://localhost:3000/dynamic | Dynamic 센서 데이터 테이블 |
 | SQL Query | http://localhost:3000/query | Trino SQL 실행 인터페이스 |
 | Iceberg Hub | http://localhost:3000/iceberg | Iceberg 기능 체험 (Time Travel, Schema Evolution 등) |
-| Entity Diff | http://localhost:3000/entity-diff | 3-Level 드릴다운 Entity 비교 (백업 시점 간 diff) |
+| Entity Diff | http://localhost:3000/entity-diff | 3-Level 드릴다운 Entity 비교 (Task 2 백업 시점 간 diff) |
+| Raw Backup | http://localhost:3000/raw-backup | Raw 백업 파일 탐색기 (Task 1) |
 
-#### Entity Diff 사용법
+> Congestion, Static Objects, Dynamic Objects 페이지는 레거시로 현재 워크플로에서 사용하지 않습니다.
 
-1. **Load Backup Times** 클릭 → 시점 목록 로드 (소스 라벨 `[extension]`/`[nucleus]`/`[local]` 표시)
+#### Entity Diff 사용법 (Task 2)
+
+1. **Load Backup Times** 클릭 → 시점 목록 로드 (소스 라벨 `[nucleus]`/`[local]` 표시)
 2. **Time A / Time B** 선택 → **Compare** 클릭
 3. **Level 1**: Entity 목록 (added/removed/changed/unchanged)
 4. **Level 2**: Entity 클릭 → 내부 Prim 비교
 5. **Level 3**: Prim 클릭 → JSON property diff
 
-> 교차 소스 비교 시 경고: Extension과 Nucleus/Local 백업은 속성 추출 방식이 달라 비교 결과가 부정확할 수 있습니다.
-
 ---
 
-### 4. Isaac Sim Extension
+### 4. Isaac Sim Extensions
 
-`Omniverse/omniverse-extensions/lakehouse.proto/` — Isaac Sim에서 실행되는 Extension.
+`Omniverse/omniverse-extensions/` — Isaac Sim 5.1.0 Extensions.
 
 #### 설치
 
@@ -238,18 +243,22 @@ Isaac Sim Extension Manager에서 `Search Paths`에 다음 추가:
 <repo_path>/Omniverse/omniverse-extensions
 ```
 
-메뉴: **Tools > KKR-Tools > Lakehouse Proto**
+#### KKR.TimeTravel (`time.travel/`) — Task 3 (Time Travel Restore)
 
-#### 기능
+메뉴: **Tools > KKR-Tools > Time Travel**
 
 | UI Frame | Description |
 |----------|-------------|
 | **Status / Log** | 작업 상태 및 로그 표시 |
-| **API Middleware Settings** | Lakehouse API URL 설정 |
-| **Stage Management** | 테스트용 Stage 생성 (Setup Stage: Grid, Table, Jetbot, Kaya, Block_A, Block_B) |
-| **Entity Backup** | Entity 단위 백업 — Override 추출 + Hash 계산 + Iceberg 저장 (backup_source="extension") |
-| **Entity Restore** | 백업 시점 로드 → Entity 목록 조회 → 선택한 Entity를 Stage에 복원 (Reference + Override 적용) |
-| **Dynamic IoT Test** | 동적 IoT 테스트 데이터 생성 (샘플 센서 데이터 → Iceberg) |
+| **API URL Settings** | Local (`localhost:8100`) / Docker (`lakehouse-api:8000`) 프리셋 |
+| **Backup Times** | Task 2 백업 시점 목록 로드 |
+| **Restore Mode** | Changes Only / Full Entity / Full All — 3가지 복원 모드 |
+| **Undo** | 메모리 스냅샷 기반 되돌리기 |
+| **Nucleus Reopen** | Nucleus 서버에서 Stage 재오픈 |
+
+#### KKR.Lakehouse (`lakehouse.proto/`) — Deprecated
+
+> 이 Extension은 더 이상 Task 1/2/3 워크플로에 사용되지 않습니다. Prim 스캔 및 USD 익스포트 기능은 실험적 구현으로 남아있으나 활성 작업에서 제외됩니다. Task 1/2는 `nucleus_pipeline/` CLI를 사용하세요.
 
 #### 제약사항
 
@@ -261,10 +270,10 @@ Isaac Sim Extension Manager에서 `Search Paths`에 다음 추가:
 ## Data Flow
 
 ```
-[Isaac Sim Extension]                    [Nucleus Pipeline]
+[Nucleus Pipeline (Task 1)]              [Nucleus Pipeline (Task 2)]
         │                                       │
-        │ POST /api/v1/prims                     │ POST /api/v1/entities/backup
-        │ POST /api/v1/upload-usd                │ POST /api/v1/upload-usd (s3_key)
+        │ POST /api/v1/raw-backup/files          │ POST /api/v1/entities/backup
+        │                                       │ POST /api/v1/upload-usd
         ▼                                       ▼
 ┌─────────────────────────────────────────────────────┐
 │                 Lakehouse API (:8100)                │
@@ -272,18 +281,21 @@ Isaac Sim Extension Manager에서 `Search Paths`에 다음 추가:
 │  Trino (:8900)  ──▶  Polaris (:8181)  ──▶  MinIO   │
 │   (SQL Engine)      (REST Catalog)      (S3 :9000)  │
 └─────────────────────────────────────────────────────┘
-        ▲
-        │ fetch API
-┌───────┴──────────┐
-│ Dashboard (:3000)│
-└──────────────────┘
+        ▲                        ▲
+        │ GET /api/v1/entities/* │ fetch API
+┌───────┴──────────────┐ ┌──────┴───────────┐
+│ KKR.TimeTravel (Task3│ │ Dashboard (:3000) │
+│ Isaac Sim Extension) │ └──────────────────┘
+└──────────────────────┘
 ```
 
 ---
 
 ## Iceberg Table Schema
 
-### `iceberg.static_db.entities`
+Trino 접근: catalog=`polaris`, namespace=`netai`
+
+### `polaris.netai.entities` (Task 2)
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -293,10 +305,10 @@ Isaac Sim Extension Manager에서 `Search Paths`에 다음 추가:
 | source_type | VARCHAR | reference / payload / container |
 | source_asset | VARCHAR | 원본 에셋 URL |
 | entity_hash | VARCHAR | SHA-256 hash (변경 감지용) |
-| backup_source | VARCHAR | extension / nucleus / local |
+| backup_source | VARCHAR | nucleus / local |
 | backup_time | TIMESTAMP(6) | 백업 시점 |
 
-### `iceberg.static_db.prim_snapshots`
+### `polaris.netai.prim_snapshots` (Task 2)
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -305,6 +317,17 @@ Isaac Sim Extension Manager에서 `Search Paths`에 다음 추가:
 | prim_type | VARCHAR | Prim 타입 |
 | properties | VARCHAR | Override 속성 (JSON) |
 | prim_hash | VARCHAR | Property hash |
+| backup_time | TIMESTAMP(6) | 백업 시점 |
+
+### `polaris.netai.raw_backup_files` (Task 1)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| file_id | VARCHAR | UUID |
+| nucleus_path | VARCHAR | 원본 Nucleus 파일 경로 |
+| s3_key | VARCHAR | MinIO 저장 경로 |
+| file_size | BIGINT | 파일 크기 (bytes) |
+| file_hash | VARCHAR | SHA-256 hash (변경 감지용) |
 | backup_time | TIMESTAMP(6) | 백업 시점 |
 
 ---
@@ -337,7 +360,8 @@ NetAI-Digital-Twin/
 │   └── requirements.txt
 ├── Omniverse/
 │   └── omniverse-extensions/
-│       └── lakehouse.proto/        # Isaac Sim extension
+│       ├── time.travel/            # KKR.TimeTravel — Task 3 (active)
+│       └── lakehouse.proto/        # KKR.Lakehouse — deprecated (not used in Task 1/2/3)
 ├── Lakehouse/Iceberg/
 │   ├── docker-compose.yml          # Stack orchestration (7 services)
 │   ├── start.sh                    # Startup script

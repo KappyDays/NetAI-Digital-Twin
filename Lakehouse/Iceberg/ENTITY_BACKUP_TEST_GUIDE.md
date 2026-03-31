@@ -58,15 +58,13 @@ curl http://localhost:8100/api/v1/health
 ```bash
 curl -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SHOW TABLES FROM iceberg.netai"}'
+  -d '{"sql": "SHOW TABLES FROM polaris.netai"}'
 ```
 
-**결과: PASS** - 5개 테이블 확인
+**결과: PASS** - 3개 테이블 확인
 - `entities` (Entity 메타데이터)
 - `prim_snapshots` (Sub-Prim 스냅샷)
-- `static_prims` (기존 Static Prim)
-- `dynamic_world_robots_jetbot` (샘플 IoT)
-- `dynamic_world_robots_kaya` (샘플 IoT)
+- `raw_backup_files` (Raw Backup 파일 메타데이터)
 
 ---
 
@@ -156,17 +154,6 @@ curl "http://localhost:8100/api/v1/entities/World/Robots/Jetbot/restore?backup_t
 
 **결과: PASS** - entity 정보 + 2개 prim_snapshots (Camera, Lidar) 반환
 
-### 2-7. POST /api/v1/dynamic/sample-ingest
-
-Dynamic Entity에 대한 가짜 IoT 데이터 생성.
-
-```bash
-curl -X POST http://localhost:8100/api/v1/dynamic/sample-ingest \
-  -H "Content-Type: application/json" \
-  -d '{"entity_path": "/World/Robots/Jetbot", "count": 5}'
-```
-
-**결과: PASS** - `records_generated: 5, table_name: dynamic_world_robots_jetbot`
 
 ---
 
@@ -183,7 +170,7 @@ curl "http://localhost:8100/api/v1/entities/list?backup_time=';DROP+TABLE+entiti
 ### 3-2. Invalid Table Name 차단
 
 ```bash
-curl -X POST http://localhost:8100/api/v1/dynamic/sample-ingest \
+curl -X POST http://localhost:8100/api/v1/entities/backup \
   -H "Content-Type: application/json" \
   -d '{"entity_path": "; DROP TABLE--", "count": 1}'
 ```
@@ -224,100 +211,70 @@ http://localhost:3000
 
 ---
 
-## Phase 5: Isaac Sim Extension 테스트 (수동 — Isaac Sim 필요)
+## Phase 5: Nucleus Pipeline 및 Isaac Sim Extension 테스트 (수동)
 
-Isaac Sim 5.1.0이 설치된 환경에서 수행합니다.
+Nucleus 서버 및 Isaac Sim 5.1.0이 설치된 환경에서 수행합니다.
 
-### 사전 설정
+> **참고**: Task 1/2는 `nucleus_pipeline/` CLI로 수행합니다. Omniverse Extension은 Task 3 복원(`KKR.TimeTravel`)에만 사용됩니다.
 
-1. Isaac Sim 실행
-2. Extension Manager (Window > Extensions)에서 `KKR.Lakehouse` 검색 후 활성화
-3. Tools > KKR-Tools > KKR.Lakehouse 클릭하여 Extension 패널 열기
-4. **API Base URL**을 `http://localhost:8100`으로 설정 (Docker 외부에서 접근 시)
-5. **"PING API"** 버튼으로 연결 확인
+### 5-1. nucleus_pipeline — Task 1 (Raw Backup)
 
-### 5-1. Stage Setup
+Nucleus 서버의 폴더를 MinIO에 증분 백업하고 Iceberg에 메타데이터를 기록합니다.
 
-1. **"SETUP STAGE"** 버튼 클릭
-2. Stage Hierarchy에서 확인:
-
-```
-/World
-├── /Environment
-│   ├── /Grid        (Reference → default_environment.usd)
-│   └── /Table       (Reference → table_instanceable.usd)
-├── /Robots
-│   ├── /Jetbot      (Reference → jetbot.usd)
-│   └── /Kaya        (Reference → kaya.usd)
-└── /Props
-    ├── /Block_A     (Reference → basic_block.usd)
-    └── /Block_B     (Reference → basic_block.usd)
+```bash
+cd nucleus_pipeline
+python main.py --raw-backup --nucleus-folder omniverse://10.38.38.48/Projects/MyProject
 ```
 
 **확인 사항:**
-- [ ] /World 아래 3개 Xform (Environment, Robots, Props) 생성됨
-- [ ] 각 Xform에 2개 이상의 Reference Prim 존재
-- [ ] Viewport에서 에셋이 시각적으로 확인됨
-- [ ] Nucleus 연결 필요 (연결 안 된 경우 에러 메시지 표시)
+- [ ] 실행 성공 (오류 없이 완료)
+- [ ] `http://localhost:8100/api/v1/raw-backup/times`에 백업 시점 추가됨
+- [ ] MinIO Console (`http://localhost:9001`)에서 파일 업로드 확인
 
-### 5-2. Entity Backup
+### 5-2. nucleus_pipeline — Task 2 (Entity Backup)
 
-1. **"BACKUP"** 버튼 클릭
-2. Status 라벨에서 결과 확인
+Nucleus USD 파일의 root layer overrides를 파싱하여 Entity/Prim 스냅샷을 Iceberg에 저장합니다.
+
+```bash
+cd nucleus_pipeline
+python main.py --nucleus-path omniverse://10.38.38.48/Projects/MyProject/World.usd
+```
 
 **확인 사항:**
-- [ ] "Status: Done" 표시
-- [ ] Entity 수 (6개 이상: Grid, Table, Jetbot, Kaya, Block_A, Block_B)
-- [ ] Prim 수 표시
-- [ ] Status/Log에 API response 출력
+- [ ] 실행 성공 (오류 없이 완료)
 - [ ] `http://localhost:8100/api/v1/entities/backup-times`에 새 시점 추가됨
 - [ ] MinIO Console (`http://localhost:9001`)에서 USD 파일 업로드 확인
 
-### 5-3. Prim 수정 후 재백업
+### 5-3. USD 수정 후 재백업
 
-1. Viewport에서 Jetbot 선택 → Property 패널에서 Transform 변경 (예: Position X를 2.0으로)
-2. **"BACKUP"** 버튼 다시 클릭
+1. Nucleus에서 대상 USD 파일의 Prim 속성 변경 (예: Jetbot Position X를 2.0으로)
+2. `nucleus_pipeline --nucleus-path` 재실행
 3. Dashboard에서 두 시점 비교
 
 **확인 사항:**
 - [ ] 재백업 성공
-- [ ] Dashboard Entity Diff에서 Jetbot이 "changed"로 표시
-- [ ] Jetbot Sub-Prim drill-down에서 변경된 속성 확인 가능
+- [ ] Dashboard Entity Diff에서 해당 Entity가 "changed"로 표시
+- [ ] Entity Sub-Prim drill-down에서 변경된 속성 확인 가능
 
-### 5-4. Entity Restore
+### 5-4. Task 3 — KKR.TimeTravel Extension (Stage 복원)
 
-1. **"LOAD TIMES"** 버튼 클릭 → 백업 시점 로드
-2. `<` `>` 버튼으로 이전 백업 시점 선택
-3. **"LOAD ENTITIES"** 버튼 클릭 → Entity 목록 로드
-4. 복원할 Entity 선택 (예: Jetbot)
-5. **"RESTORE"** 버튼 클릭
+Isaac Sim에서 백업 시점 기반으로 Stage를 복원합니다.
 
-**확인 사항:**
-- [ ] 기존 Entity가 Stage에서 제거되고 이전 버전으로 복원됨
-- [ ] Reference 에셋의 경우 원본 Nucleus 에셋으로 Reference 재설정
-- [ ] Status/Log에 복원 방법 (Level 2/3) 표시
-
-### 5-5. Stage Clear
-
-1. **"CLEAR STAGE"** 버튼 클릭
+1. Isaac Sim 실행
+2. Extension Manager (Window > Extensions)에서 `KKR.TimeTravel` 검색 후 활성화
+3. Tools > KKR-Tools > KKR.TimeTravel 클릭하여 Extension 패널 열기
+4. **API URL** 드롭다운에서 `Local (localhost:8100)` 선택
+5. **"Load Times"** 버튼 클릭 → 백업 시점 목록 로드
+6. 복원할 시점 선택
+7. **"Load Entities"** 버튼 클릭 → Entity 목록 로드
+8. 복원할 Entity 선택 후 **"Restore"** 클릭
 
 **확인 사항:**
-- [ ] /World 하위 모든 Prim 제거됨
-- [ ] Stage Hierarchy에 /World만 남음
-
-### 5-6. Sample IoT 데이터 생성
-
-1. Entity Path에 `/World/Robots/Jetbot` 입력
-2. Record Count에 `10` 입력
-3. **"GENERATE IOT"** 버튼 클릭
-
-**확인 사항:**
-- [ ] 성공 메시지 + table_name 표시
-- [ ] `http://localhost:8100/api/v1/query`에서 확인:
-  ```sql
-  SELECT * FROM iceberg.netai.dynamic_world_robots_jetbot ORDER BY timestamp DESC LIMIT 5
-  ```
-
+- [ ] 백업 시점 목록이 정상 로드됨
+- [ ] Entity 목록이 해당 시점 기준으로 표시됨
+- [ ] 복원 후 Stage에 이전 버전 상태가 반영됨
+- [ ] Status/Log에 복원 모드 (Changes Only / Full Entity / Full All) 표시
+- [ ] Undo 버튼으로 복원 전 상태로 되돌리기 가능
 ---
 
 ## Phase 6: Iceberg 데이터 검증 (자동 실행 완료)
@@ -328,9 +285,7 @@ Isaac Sim 5.1.0이 설치된 환경에서 수행합니다.
 |--------|-----------|------|
 | entities | 7 | 3개 백업 시점 x 2~3 entities |
 | prim_snapshots | 5 | Jetbot Sub-Prims (Camera, Lidar) |
-| dynamic_world_robots_jetbot | 10 | 샘플 IoT 데이터 |
-| dynamic_world_robots_kaya | 3 | 샘플 IoT 데이터 |
-| static_prims | 기존 데이터 | 이전 테스트 데이터 |
+| raw_backup_files | N | nucleus_pipeline Task 1 백업 파일 메타데이터 |
 
 ### 6-2. Trino SQL 직접 확인
 
@@ -338,17 +293,17 @@ Isaac Sim 5.1.0이 설치된 환경에서 수행합니다.
 # Entity 전체 조회
 curl -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT entity_path, entity_hash, backup_time FROM iceberg.netai.entities ORDER BY backup_time, entity_path"}'
+  -d '{"sql": "SELECT entity_path, entity_hash, backup_time FROM polaris.netai.entities ORDER BY backup_time, entity_path"}'
 
 # Prim Snapshot 조회
 curl -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT entity_path, relative_path, prim_hash FROM iceberg.netai.prim_snapshots ORDER BY entity_path, relative_path"}'
+  -d '{"sql": "SELECT entity_path, relative_path, prim_hash FROM polaris.netai.prim_snapshots ORDER BY entity_path, relative_path"}'
 
 # Dynamic IoT 최신 데이터
 curl -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT * FROM iceberg.netai.dynamic_world_robots_jetbot ORDER BY timestamp DESC LIMIT 5"}'
+  -d '{"sql": "SELECT * FROM polaris.netai.raw_backup_files ORDER BY backup_time DESC LIMIT 5"}'
 ```
 
 ---
@@ -358,12 +313,12 @@ curl -X POST http://localhost:8100/api/v1/query \
 | Phase | 항목 | 방법 | 결과 |
 |-------|------|------|------|
 | 1 | Docker 서비스 | 자동 | PASS (5/5 healthy) |
-| 2 | API 7개 엔드포인트 | 자동 | PASS (7/7) |
+| 2 | API 6개 엔드포인트 | 자동 | PASS (6/6) |
 | 3 | 보안 (SQL injection) | 자동 | PASS |
 | 4-1 | Dashboard 접근 | 자동 | PASS (HTTP 200) |
 | 4-2 | Dashboard Entity Diff UI | **수동** | 브라우저에서 확인 필요 |
 | 5 | Isaac Sim Extension | **수동** | Isaac Sim 환경 필요 |
 | 6 | Iceberg 데이터 검증 | 자동 | PASS |
 
-**자동 테스트 결과: 9/9 PASS**
+**자동 테스트 결과: 8/8 PASS**
 **수동 테스트: 2개 Phase 남음 (Dashboard UI 확인 + Isaac Sim Extension)**

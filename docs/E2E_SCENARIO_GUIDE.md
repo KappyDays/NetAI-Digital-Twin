@@ -23,7 +23,7 @@ curl http://localhost:8100/api/v1/health
 
 ```bash
 # Trino CLI 또는 DBeaver 등 SQL 클라이언트로 접속
-# Host: localhost:8900, Catalog: iceberg, Schema: static_db
+# Host: localhost:8900, Catalog: polaris, Schema: netai
 ```
 
 **Iceberg 테이블 조회 공통 방법:**
@@ -823,7 +823,7 @@ curl -X POST http://localhost:8100/api/v1/query \
 # http://localhost:3000 → 각 페이지에서 시각적 확인
 
 # 방법 3: Trino CLI / DBeaver
-# Host: localhost:8900, Catalog: iceberg, Schema: static_db
+# Host: localhost:8900, Catalog: polaris, Schema: netai
 ```
 
 ### 테이블 목록

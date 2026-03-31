@@ -70,11 +70,11 @@ Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to 
 
 `Omniverse/omniverse-extensions/` — Isaac Sim 5.1.0 Extensions.
 
-**KKR.Lakehouse** (`lakehouse.proto/`):
-- Task 1: Scans all Stage Prims → Iceberg
-- Task 2: Exports /World Prims as USD → MinIO
+**KKR.Lakehouse** (`lakehouse.proto/`) — *Deprecated, not part of active Task 1/2/3 workflow:*
+- Prim scan to Iceberg (experimental)
+- USD export to MinIO (experimental)
 
-**KKR.TimeTravel** (`time.travel/`):
+**KKR.TimeTravel** (`time.travel/`) — *Task 3 (Time Travel Restore):*
 - Stage/Entity restore from Iceberg backup timestamps
 - 3 restore modes: Changes Only / Full Entity / Full All
 - Undo (memory snapshot) + Nucleus Reopen

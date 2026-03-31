@@ -33,15 +33,25 @@ NetAI-Digital-Twin/
 
 > **Note**: `docker-compose.yml`이 `api_service`와 `dashboard`를 상대경로(`../../api_service`, `../../dashboard`)로 참조하므로 위 3개 폴더의 상대 위치가 반드시 유지되어야 합니다.
 
-### Optional (Omniverse Extension 사용 시)
+### Optional (Omniverse Extension / Nucleus Pipeline 사용 시)
 
 ```
 NetAI-Digital-Twin/
-└── Omniverse/omniverse-extensions/lakehouse.proto/
-    ├── config/extension.toml   # 확장 메타데이터
-    ├── KKR_Lakehouse_python/   # Extension 소스 (extension.py, ui_builder.py 등)
+├── Omniverse/omniverse-extensions/time.travel/   # KKR.TimeTravel Extension (Task 3)
+│   ├── config/extension.toml
+│   └── KKR_TimeTravel_python/
+│
+├── nucleus_pipeline/                              # Nucleus 백업 CLI (Task 1/2)
+│   ├── main.py
+│   └── requirements.txt
+│
+└── Omniverse/omniverse-extensions/lakehouse.proto/  # Deprecated — 사용하지 않음
     └── ...
 ```
+
+- **`nucleus_pipeline/`**: Task 1 (Raw Backup) 및 Task 2 (Entity Backup) 실행 CLI. `pxr`(OpenUSD), `omni.client` 의존.
+- **`time.travel/`**: Task 3 복원 Extension. Isaac Sim 5.1.0 필요.
+- **`lakehouse.proto/`**: Deprecated. Task 1/2/3에서 사용하지 않습니다.
 
 Isaac Sim이 설치된 환경에서만 필요합니다. API 엔드포인트 테스트만 할 경우 불필요합니다.
 
@@ -249,71 +259,58 @@ Expected response:
 }
 ```
 
-### 5.2 Static Prim Insertion (AC 3)
+### 5.2 Entity Backup (Task 2)
 
 ```bash
-curl -s -X POST http://localhost:8100/api/v1/prims \
+curl -s -X POST http://localhost:8100/api/v1/entities/backup \
   -H "Content-Type: application/json" \
   -d '{
-    "records": [
-      {
-        "prim_path": "/World/Room_A/Chair_01",
-        "type": "Mesh",
-        "properties": "{\"material\": \"wood\", \"color\": \"brown\"}"
-      },
-      {
-        "prim_path": "/World/Room_A/Table_01",
-        "type": "Mesh",
-        "properties": "{\"material\": \"metal\", \"height\": 0.75}"
-      },
-      {
-        "prim_path": "/World/Room_B/Camera_01",
-        "type": "Camera",
-        "properties": "{\"fov\": 60, \"resolution\": [1920, 1080]}"
-      }
-    ]
+    "backup_time": "2026-03-26 10:00:00.000",
+    "entities": [{
+      "entity_id": "test-001",
+      "entity_path": "/World/Robots/Jetbot",
+      "entity_type": "Xform",
+      "source_type": "reference",
+      "source_asset": "/Isaac/Robots/Jetbot/jetbot.usd",
+      "is_dynamic": false,
+      "child_count": 3,
+      "entity_hash": "a3f8c2e1b7d94f02",
+      "usd_file_path": "s3://warehouse2/usd/jetbot_20260326.usd"
+    }],
+    "prim_snapshots": [{
+      "entity_path": "/World/Robots/Jetbot",
+      "relative_path": "/Lidar",
+      "prim_type": "Xform",
+      "properties": "{\"intensity\": 1.0, \"range\": 10.0}",
+      "prim_hash": "1111111111111111"
+    }]
   }' | python3 -m json.tool
 ```
 
 Expected:
 ```json
 {
-    "inserted": 3,
-    "table": "netai.static_prims",
-    "message": "Successfully inserted 3 static prim records"
+    "entities_inserted": 1,
+    "prims_inserted": 1
 }
 ```
 
-### 5.3 Trino SQL Query (AC 8)
+### 5.3 Trino SQL Query
 
 ```bash
 curl -s -X POST http://localhost:8100/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT space_id, prim_path, prim_type FROM iceberg.netai.static_prims LIMIT 10"}' \
+  -d '{"sql": "SELECT entity_path, entity_hash, backup_time FROM polaris.netai.entities ORDER BY backup_time DESC LIMIT 10"}' \
   | python3 -m json.tool
 ```
 
-### 5.4 Dynamic Object Ingest (AC 4)
+### 5.4 Raw Backup Times
 
 ```bash
-curl -s -X POST http://localhost:8100/api/v1/dynamic/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "records": [
-      {
-        "object_id": "robot_01",
-        "space_id": "Room_A",
-        "pos_x": 1.5,
-        "pos_y": 2.3,
-        "pos_z": 0.0,
-        "rot_x": 0.0,
-        "rot_y": 0.0,
-        "rot_z": 45.0,
-        "properties": "{\"battery\": 85, \"speed\": 1.2}"
-      }
-    ]
-  }' | python3 -m json.tool
+curl -s http://localhost:8100/api/v1/raw-backup/times | python3 -m json.tool
 ```
+
+> **참고**: Dynamic Object Ingest (`/api/v1/dynamic/ingest`)는 현재 워크플로우에서 사용되지 않습니다. Task 1 Raw Backup은 `nucleus_pipeline` CLI를 통해 수행합니다.
 
 ### 5.5 USD File Upload (AC 5)
 
@@ -326,12 +323,14 @@ curl -s -X POST http://localhost:8100/api/v1/upload-usd \
   | python3 -m json.tool
 ```
 
-### 5.6 Congestion Summary (AC 6 data endpoint)
+### 5.6 Entity Diff
 
 ```bash
-curl -s http://localhost:8100/api/v1/spaces/congestion/summary \
+curl -s "http://localhost:8100/api/v1/entities/diff?time_a=2026-03-26+10:00:00.000&time_b=2026-03-26+11:00:00.000" \
   | python3 -m json.tool
 ```
+
+> **참고**: Congestion Summary (`/api/v1/spaces/congestion/summary`)는 현재 워크플로우에서 사용되지 않습니다.
 
 ### 5.7 Dashboard Access (AC 7)
 
@@ -375,14 +374,15 @@ export LAKEHOUSE_API_URL=http://localhost:8100
 export LAKEHOUSE_API_URL=http://<server-ip>:8100
 ```
 
-### 6.3 Extension Features
+### 6.3 Task Workflow Overview
 
-| Feature | Description |
-|---|---|
-| **Task 1: Export Prims** | Scans all Stage Prims → POST /api/v1/prims |
-| **Task 2: Upload USD** | Exports /World children as USD → POST /api/v1/upload-usd |
-| **Congestion View** | Displays space congestion summary in omni.ui panel |
-| **Drilldown** | Click a space → shows per-object detail |
+> **참고**: Task 1/2는 `nucleus_pipeline/` CLI로 수행합니다. Isaac Sim Extension은 Task 3 복원에만 사용됩니다.
+
+| Task | Tool | Description |
+|---|---|---|
+| **Task 1: Raw Backup** | `nucleus_pipeline` CLI | Nucleus 폴더 → MinIO 증분 백업 + Iceberg `raw_backup_files` 메타데이터 기록 |
+| **Task 2: Entity Backup** | `nucleus_pipeline` CLI | USD root layer overrides 파싱 → Iceberg `entities` + `prim_snapshots` 저장 + MinIO USD 업로드 |
+| **Task 3: Time Travel Restore** | `KKR.TimeTravel` Extension | 백업 시점 기반 Stage/Entity 복원 (Changes Only / Full Entity / Full All 3가지 모드) |
 
 ### 6.4 Headless Mode Note
 
@@ -399,27 +399,26 @@ Run this sequence to verify the complete data pipeline:
 # E2E verification script
 set -e
 API="http://localhost:8100"
+NOW=$(date -u +"%Y-%m-%d %H:%M:%S.000")
 
-echo "=== Step 1: Insert Static Prims ==="
-curl -sf -X POST ${API}/api/v1/prims \
+echo "=== Step 1: Entity Backup ==="
+curl -sf -X POST ${API}/api/v1/entities/backup \
   -H "Content-Type: application/json" \
-  -d '{"records":[{"prim_path":"/World/TestSpace/Obj_01","type":"Xform","properties":"{}"}]}' \
+  -d "{\"backup_time\":\"${NOW}\",\"entities\":[{\"entity_id\":\"e2e-001\",\"entity_path\":\"/World/Test/Obj_01\",\"entity_type\":\"Xform\",\"source_type\":\"override\",\"is_dynamic\":false,\"child_count\":0,\"entity_hash\":\"deadbeef12345678\"}],\"prim_snapshots\":[]}" \
   | python3 -m json.tool
 
-echo "=== Step 2: Query via Trino ==="
+echo "=== Step 2: List Backup Times ==="
+curl -sf ${API}/api/v1/entities/backup-times | python3 -m json.tool
+
+echo "=== Step 3: Query via Trino ==="
 curl -sf -X POST ${API}/api/v1/query \
   -H "Content-Type: application/json" \
-  -d '{"sql":"SELECT * FROM iceberg.netai.static_prims WHERE space_id='\''TestSpace'\''"}' \
+  -d '{"sql":"SELECT entity_path, entity_hash, backup_time FROM polaris.netai.entities ORDER BY backup_time DESC LIMIT 5"}' \
   | python3 -m json.tool
 
-echo "=== Step 3: Ingest Dynamic Data ==="
-curl -sf -X POST ${API}/api/v1/dynamic/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"records":[{"object_id":"sensor_01","space_id":"TestSpace","pos_x":0,"pos_y":0,"pos_z":0}]}' \
-  | python3 -m json.tool
-
-echo "=== Step 4: Check Congestion ==="
-curl -sf ${API}/api/v1/spaces/congestion/summary | python3 -m json.tool
+echo "=== Step 4: USD Upload ==="
+echo '{"test": "usd_content"}' > /tmp/test_prim.usda
+curl -sf -X POST ${API}/api/v1/upload-usd -F "file=@/tmp/test_prim.usda" | python3 -m json.tool
 
 echo "=== Step 5: Dashboard Health ==="
 curl -sf -o /dev/null -w "Dashboard: HTTP %{http_code}\n" http://localhost:3000/
@@ -482,7 +481,7 @@ docker compose logs polaris-init
 
 ```bash
 # Check catalog properties were rendered
-docker exec trino cat /etc/trino/catalog/iceberg.properties
+docker exec trino cat /etc/trino/catalog/polaris.properties
 
 # Restart Trino if needed
 docker compose restart trino
