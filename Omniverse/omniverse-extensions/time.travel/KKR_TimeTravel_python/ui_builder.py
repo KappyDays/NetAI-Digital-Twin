@@ -347,12 +347,11 @@ class UIBuilder:
 
     async def _async_restore_stage(self, backup_time: str, mode: str):
         try:
-            # 1. Capture undo snapshot before restore
+            # 1. Capture undo snapshot (main thread — Stage API is not thread-safe)
             self._set_status("Capturing undo snapshot...")
-            loop = asyncio.get_running_loop()
-            self._undo_snapshot = await loop.run_in_executor(None, capture_undo_snapshot)
+            self._undo_snapshot = capture_undo_snapshot()
 
-            # 2. Fetch all data in one API call
+            # 2. Fetch all data in one API call (executor — network I/O)
             self._set_status("Fetching backup data...")
             encoded = urllib.parse.quote(backup_time, safe="")
             data = await api_get(
@@ -368,19 +367,16 @@ class UIBuilder:
                 self._restore_result_label.text = "No data to restore."
                 return
 
-            # 3. Apply restore
+            # 3. Apply restore (main thread — Stage API is not thread-safe)
             self._restore_result_label.text = f"Restoring {len(entities)} entities, {len(prim_snapshots)} prim snapshots..."
             self._set_status(f"Applying {len(entities)} entities...")
 
-            def do_restore():
-                return restore_stage(
-                    entities=entities,
-                    prim_snapshots=prim_snapshots,
-                    mode=mode,
-                    progress_callback=None,
-                )
-
-            result = await loop.run_in_executor(None, do_restore)
+            result = restore_stage(
+                entities=entities,
+                prim_snapshots=prim_snapshots,
+                mode=mode,
+                progress_callback=None,
+            )
             entities_restored, props_applied, props_failed, prims_deleted, warnings = result
 
             # 4. Enable undo button
@@ -532,10 +528,8 @@ class UIBuilder:
 
     async def _async_restore_entity(self, backup_time: str, entity_path: str):
         try:
-            # Capture undo snapshot before restore
-            import asyncio as _asyncio
-            loop = _asyncio.get_running_loop()
-            self._undo_snapshot = await loop.run_in_executor(None, capture_undo_snapshot)
+            # Capture undo snapshot (main thread — Stage API is not thread-safe)
+            self._undo_snapshot = capture_undo_snapshot()
 
             encoded_ep = urllib.parse.quote(entity_path.lstrip("/"), safe="")
             encoded_bt = urllib.parse.quote(backup_time, safe="")
@@ -549,12 +543,8 @@ class UIBuilder:
                 self._entity_result_label.text = "No prim snapshots to restore."
                 return
 
-            loop = asyncio.get_running_loop()
-
-            def do_restore():
-                return restore_single_entity(entity_path, prim_snapshots)
-
-            applied, failed, warnings = await loop.run_in_executor(None, do_restore)
+            # Apply restore (main thread — Stage API is not thread-safe)
+            applied, failed, warnings = restore_single_entity(entity_path, prim_snapshots)
 
             self._undo_btn.enabled = True
             self._entity_result_label.text = (

@@ -9,6 +9,7 @@ Handles:
 
 import hashlib
 import json
+from collections import deque
 from typing import Any
 
 import omni.usd
@@ -101,16 +102,52 @@ def _extract_layer_overrides(layer_prim) -> dict:
 
 
 def _to_json_value(val) -> Any:
-    """Convert a USD/Sdf value to a JSON-serializable Python type."""
+    """Convert a USD/Sdf value to a JSON-serializable Python type.
+
+    Must produce identical output to nucleus_pipeline/usd_parser.py._to_json_value()
+    so that hash verification matches after restore.
+    """
     if val is None:
         return None
-    if isinstance(val, (int, float, bool, str)):
+    if isinstance(val, bool):
         return val
-    if hasattr(val, "__len__") and not isinstance(val, str):
-        try:
-            return [float(v) for v in val]
-        except (TypeError, ValueError):
-            return str(val)
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if val != val:  # NaN
+            return "NaN"
+        if val == float('inf'):
+            return "Infinity"
+        if val == float('-inf'):
+            return "-Infinity"
+        return round(val, 9)
+    if isinstance(val, str):
+        return val
+    # AssetPath (e.g. info:mdl:sourceAsset on Shader prims)
+    if type(val).__name__ == "AssetPath":
+        return val.path
+    # Quaternion types (Gf.Quatd, Gf.Quatf, Gf.Quath)
+    if hasattr(val, "GetReal") and hasattr(val, "GetImaginary"):
+        imag = val.GetImaginary()
+        return [round(float(val.GetReal()), 9),
+                round(float(imag[0]), 9),
+                round(float(imag[1]), 9),
+                round(float(imag[2]), 9)]
+    if hasattr(val, "__len__"):
+        result = []
+        for v in val:
+            if hasattr(v, "__len__"):
+                # Nested vector (Vec3f, Vec2f, etc.) — decompose to components
+                try:
+                    result.append([round(float(c), 9) for c in v])
+                except (TypeError, ValueError):
+                    result.append([str(c) for c in v])
+            else:
+                try:
+                    result.append(round(float(v), 9))
+                except (TypeError, ValueError):
+                    result.append(str(v))
+        return result
     return str(val)
 
 
@@ -336,9 +373,9 @@ def _cleanup_residual_prims(
 
     entity_path_len = len(entity_path)
     # BFS: check children; skip subtrees already deleted via a parent removal
-    queue = list(entity_prim.GetChildren())
+    queue = deque(entity_prim.GetChildren())
     while queue:
-        prim = queue.pop(0)
+        prim = queue.popleft()
         prim_path = str(prim.GetPath())
         rel_path = prim_path[entity_path_len:]  # e.g. "/Room1"
 
@@ -428,8 +465,10 @@ def _apply_properties_to_prim(stage, prim, props: dict) -> tuple[int, int, list]
     regular_attrs = {}
 
     for key, val in props.items():
-        if key == "typeName":
-            continue
+        if key in ("typeName", "specifier"):
+            continue  # Sdf metadata — not settable as prim attributes
+        elif key == "xformOpOrder":
+            continue  # managed automatically by UsdGeom.Xformable
         elif key.startswith("xformOp:"):
             xform_ops[key] = val
         elif key.startswith("rel:"):
@@ -468,12 +507,24 @@ def _apply_properties_to_prim(stage, prim, props: dict) -> tuple[int, int, list]
                         else:
                             xform_op = xformable.AddOrientOp()
                         if isinstance(op_val, list) and len(op_val) == 4:
-                            xform_op.Set(Gf.Quatd(op_val[3], op_val[0], op_val[1], op_val[2]))
+                            # Match quaternion precision to existing attribute type
+                            # Stored as [w, x, y, z] where w=real; Gf.Quat*(real, i, j, k)
+                            cur = xform_op.GetAttr().Get()
+                            if isinstance(cur, Gf.Quatf):
+                                xform_op.Set(Gf.Quatf(
+                                    float(op_val[0]), float(op_val[1]),
+                                    float(op_val[2]), float(op_val[3]),
+                                ))
+                            else:
+                                xform_op.Set(Gf.Quatd(
+                                    op_val[0], op_val[1],
+                                    op_val[2], op_val[3],
+                                ))
                             applied += 1
                         else:
                             failed += 1
                             warnings.append(f"{prim.GetPath()}.{op_name}: invalid orient value")
-                    elif "rotatexyz" in short_name.lower() or "rotateXYZ" in short_name:
+                    elif "rotatexyz" in short_name.lower():
                         if op_name in existing_ops:
                             xform_op = existing_ops[op_name]
                         else:
@@ -575,11 +626,46 @@ def _apply_properties_to_prim(stage, prim, props: dict) -> tuple[int, int, list]
     return applied, failed, warnings
 
 
+def _parse_special_float(val):
+    """Convert special float strings back to Python float values."""
+    if isinstance(val, str):
+        if val == "Infinity":
+            return float('inf')
+        if val == "-Infinity":
+            return float('-inf')
+        if val == "NaN":
+            return float('nan')
+    return val
+
+
+def _is_numeric_type(attr) -> bool:
+    """Check if a USD attribute's type is numeric (float, double, int, etc.)."""
+    type_name = str(attr.GetTypeName())
+    numeric_keywords = ("float", "double", "half", "int", "uint", "long", "short")
+    return any(k in type_name.lower() for k in numeric_keywords)
+
+
 def _set_attr_value(attr, val):
     """Set a USD attribute value, converting Python types to USD types."""
+    # Convert special float strings (Infinity, -Infinity, NaN) for numeric attrs
+    if _is_numeric_type(attr):
+        if isinstance(val, str):
+            val = _parse_special_float(val)
+        elif isinstance(val, list):
+            val = [_parse_special_float(v) if isinstance(v, str) else v for v in val]
+
     current = attr.Get()
     if current is None:
         attr.Set(val)
+        return
+
+    # Handle AssetPath attributes (e.g. info:mdl:sourceAsset on Shader prims)
+    if isinstance(current, Sdf.AssetPath):
+        path_str = str(val)
+        # Strip stale @ delimiters if captured by str(AssetPath)
+        if path_str.startswith("@") and path_str.endswith("@"):
+            path_str = path_str[1:-1]
+        attr.Set(Sdf.AssetPath(path_str))
         return
 
     if isinstance(val, list):
@@ -605,9 +691,10 @@ def _set_attr_value(attr, val):
             elif isinstance(current, Gf.Vec4f):
                 attr.Set(Gf.Vec4f(*val))
             elif isinstance(current, Gf.Quatd):
-                attr.Set(Gf.Quatd(val[3], val[0], val[1], val[2]))
+                # Stored as [w, x, y, z]; Gf.Quatd(real, i, j, k)
+                attr.Set(Gf.Quatd(val[0], val[1], val[2], val[3]))
             elif isinstance(current, Gf.Quatf):
-                attr.Set(Gf.Quatf(val[3], val[0], val[1], val[2]))
+                attr.Set(Gf.Quatf(val[0], val[1], val[2], val[3]))
             else:
                 attr.Set(val)
         else:
