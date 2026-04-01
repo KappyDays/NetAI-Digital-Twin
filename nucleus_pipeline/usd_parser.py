@@ -30,15 +30,29 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
     """
     from pxr import Sdf
 
-    # Use Sdf Layer API directly — stage.Traverse() with LoadNone misses Payload prims
     root_layer = Sdf.Layer.FindOrOpen(file_path)
     if not root_layer:
         raise RuntimeError(f"Failed to open USD layer: {file_path}")
 
-    # Step 1: Identify entities via Sdf Layer traversal
-    # Includes: Reference/Payload prims AND container Xforms under /World
+    # Step 1: Identify entities
+    # Primary: Sdf.Layer traversal — reliable for root layer content,
+    # correctly detects both references AND payloads (LoadNone hides payloads).
     entity_paths = {}
     _traverse_layer_for_entities(root_layer, "/World", entity_paths)
+
+    # Supplementary: Stage traversal for sublayer prims not in root layer.
+    # Uses default load (not LoadNone) so payload prims are visible.
+    if root_layer.subLayerPaths:
+        try:
+            from pxr import Usd
+            stage = Usd.Stage.Open(root_layer)
+            stage_paths = {}
+            _traverse_stage_for_entities(stage, "/World", stage_paths)
+            for ep, info in stage_paths.items():
+                if ep not in entity_paths:
+                    entity_paths[ep] = info
+        except Exception:
+            pass
 
     # Step 2: Extract overrides from root layer (Sdf API)
     entities = []
@@ -63,7 +77,7 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
 
             prim_snapshots.append({
                 "entity_path": entity_path,
-                "relative_path": rel_path.replace(entity_path, "") or "/",
+                "relative_path": rel_path[len(entity_path):] or "/",
                 "prim_type": props.get("typeName", "Unknown"),
                 "properties": props_json,
                 "prim_hash": h,
@@ -93,6 +107,20 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
     return entities, prim_snapshots, asset_urls
 
 
+def _get_all_list_items(list_op) -> list:
+    """Get all items from a Sdf ListOp (prepended + appended + explicit).
+
+    USD references/payloads can be authored as prepend, append, or explicit.
+    Isaac Sim typically uses explicit items for drag-and-drop references.
+    """
+    items = []
+    for attr_name in ("prependedItems", "appendedItems", "explicitItems"):
+        sub = getattr(list_op, attr_name, None)
+        if sub:
+            items.extend(sub)
+    return items
+
+
 def _traverse_layer_for_entities(layer, path: str, entity_paths: dict):
     """Recursively traverse Sdf Layer to find all entities (Reference/Payload/Container).
 
@@ -108,8 +136,8 @@ def _traverse_layer_for_entities(layer, path: str, entity_paths: dict):
         if not child_spec:
             continue
 
-        refs = list(child_spec.referenceList.prependedItems) if child_spec.referenceList.prependedItems else []
-        pays = list(child_spec.payloadList.prependedItems) if child_spec.payloadList.prependedItems else []
+        refs = _get_all_list_items(child_spec.referenceList)
+        pays = _get_all_list_items(child_spec.payloadList)
 
         if refs or pays:
             source_type = "reference" if refs else "payload"
@@ -129,6 +157,63 @@ def _traverse_layer_for_entities(layer, path: str, entity_paths: dict):
 
         # Recurse into children (for nested entities inside containers)
         _traverse_layer_for_entities(layer, child_path, entity_paths)
+
+
+def _traverse_stage_for_entities(stage, path: str, entity_paths: dict):
+    """Traverse composed Stage to find all entities.
+
+    Unlike _traverse_layer_for_entities (Sdf.Layer only), this sees prims from
+    sublayers too — covers the full composed /World hierarchy.
+    """
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        return
+
+    for child in prim.GetChildren():
+        child_path = str(child.GetPath())
+
+        has_refs = child.HasAuthoredReferences()
+        has_pays = child.HasAuthoredPayloads()
+
+        if has_refs or has_pays:
+            source_type, source_asset = _get_composition_source(child)
+            entity_paths[child_path] = {
+                "type": child.GetTypeName() or "Xform",
+                "source_type": source_type,
+                "source_asset": source_asset,
+            }
+        elif path == "/World":
+            # Container Xform directly under /World (no composition arc)
+            entity_paths[child_path] = {
+                "type": child.GetTypeName() or "Xform",
+                "source_type": "container",
+                "source_asset": "",
+            }
+
+        # Recurse into children (for nested entities inside containers)
+        _traverse_stage_for_entities(stage, child_path, entity_paths)
+
+
+def _get_composition_source(prim) -> tuple[str, str]:
+    """Extract source_type and source_asset from a prim's composition arcs.
+
+    Searches through all layers in the prim stack (root + sublayers) to find
+    the Reference or Payload arc, regardless of which layer authored it.
+    """
+    try:
+        for spec in prim.GetPrimStack():
+            refs = _get_all_list_items(spec.referenceList)
+            if refs:
+                return "reference", str(refs[0].assetPath)
+            pays = _get_all_list_items(spec.payloadList)
+            if pays:
+                return "payload", str(pays[0].assetPath)
+    except Exception:
+        pass
+    # HasAuthoredPayloads/References was true but we couldn't find the arc detail
+    if prim.HasAuthoredPayloads():
+        return "payload", ""
+    return "reference", ""
 
 
 def _collect_overrides_recursive(
@@ -188,6 +273,10 @@ def _extract_layer_overrides(layer_prim) -> dict[str, Any]:
     if type_name:
         props["typeName"] = type_name
 
+    # Note: specifier (def/over/class) is intentionally NOT captured here.
+    # It is Sdf layer metadata that cannot be applied via prim attribute API,
+    # and including it would cause hash divergence with restore_engine.py.
+
     # Authored attribute overrides
     for prop_spec in layer_prim.properties:
         prop_name = prop_spec.name
@@ -222,6 +311,27 @@ def _extract_layer_overrides(layer_prim) -> dict[str, Any]:
             ai = layer_prim.GetInfo("assetInfo")
             if ai:
                 props["meta:assetInfo"] = {str(k): str(v) for k, v in ai.items()}
+        elif key == "apiSchemas":
+            api_list_op = layer_prim.GetInfo("apiSchemas")
+            api_data = {}
+            if hasattr(api_list_op, "prependedItems") and api_list_op.prependedItems:
+                api_data["prepend"] = [str(t) for t in api_list_op.prependedItems]
+            if hasattr(api_list_op, "deletedItems") and api_list_op.deletedItems:
+                api_data["delete"] = [str(t) for t in api_list_op.deletedItems]
+            if hasattr(api_list_op, "appendedItems") and api_list_op.appendedItems:
+                api_data["append"] = [str(t) for t in api_list_op.appendedItems]
+            if hasattr(api_list_op, "explicitItems") and api_list_op.explicitItems:
+                api_data["explicit"] = [str(t) for t in api_list_op.explicitItems]
+            if api_data:
+                props["meta:apiSchemas"] = api_data
+        elif key == "variantSetNames":
+            vs = layer_prim.GetInfo("variantSetNames")
+            if vs:
+                props["meta:variantSetNames"] = list(vs)
+        elif key == "variantSelection":
+            vsel = layer_prim.GetInfo("variantSelection")
+            if vsel:
+                props["meta:variantSelection"] = dict(vsel)
 
     return props
 
@@ -235,14 +345,40 @@ def _to_json_value(val: Any) -> Any:
     if isinstance(val, int):
         return val
     if isinstance(val, float):
+        if val != val:  # NaN
+            return "NaN"
+        if val == float('inf'):
+            return "Infinity"
+        if val == float('-inf'):
+            return "-Infinity"
         return round(val, 9)
     if isinstance(val, str):
         return val
+    # AssetPath (e.g. info:mdl:sourceAsset on Shader prims)
+    if type(val).__name__ == "AssetPath":
+        return val.path
+    # Quaternion types (Gf.Quatd, Gf.Quatf, Gf.Quath)
+    if hasattr(val, "GetReal") and hasattr(val, "GetImaginary"):
+        imag = val.GetImaginary()
+        return [round(float(val.GetReal()), 9),
+                round(float(imag[0]), 9),
+                round(float(imag[1]), 9),
+                round(float(imag[2]), 9)]
     if hasattr(val, "__len__"):
-        try:
-            return [round(float(v), 9) for v in val]
-        except (TypeError, ValueError):
-            return str(val)
+        result = []
+        for v in val:
+            if hasattr(v, "__len__"):
+                # Nested vector (Vec3f, Vec2f, etc.) — decompose to components
+                try:
+                    result.append([round(float(c), 9) for c in v])
+                except (TypeError, ValueError):
+                    result.append([str(c) for c in v])
+            else:
+                try:
+                    result.append(round(float(v), 9))
+                except (TypeError, ValueError):
+                    result.append(str(v))
+        return result
     return str(val)
 
 
@@ -276,24 +412,3 @@ def _extract_depends_on(
                 if matched is not None:
                     deps.add(matched)
     return sorted(deps)
-
-
-def generate_root_usda(source_path: str, asset_urls: dict[str, str], output_path: str):
-    """Generate root.usda: copy source layer as-is, preserving original Reference/Payload URLs.
-
-    USD entity files are NOT self-contained — they depend on sibling files
-    (sublayers, textures, materials) via relative paths. Rewriting URLs to
-    ./entities/*.usd breaks these internal references.
-
-    Instead, root.usda keeps original absolute URLs so Isaac Sim can resolve
-    all dependencies from the original source (NVIDIA CDN, Nucleus server).
-    Entity USD copies in MinIO serve as archival backups.
-
-    Args:
-        source_path: Path to the original downloaded USD file
-        asset_urls: {entity_path: original_url} (for reference, not rewritten)
-        output_path: Where to write the root.usda copy
-    """
-    import shutil
-    shutil.copy2(source_path, output_path)
-    return output_path

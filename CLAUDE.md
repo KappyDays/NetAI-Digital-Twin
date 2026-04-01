@@ -39,23 +39,7 @@ chmod +x scripts/*.sh start.sh
 
 ### 2. API Service (FastAPI Middleware)
 
-Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to the Iceberg Lakehouse.
-
-**Key endpoints:**
-- `GET /api/v1/health` — Lightweight health check
-- `POST /api/v1/query` — Ad-hoc Trino SQL query
-- `POST /api/v1/upload-usd` — Upload USD files (MinIO/S3)
-- `POST /api/v1/entities/backup` — Entity + Prim snapshot backup
-- `GET /api/v1/entities/backup-times` — List backup timestamps
-- `GET /api/v1/entities/list?backup_time=T` — List entities at timestamp
-- `GET /api/v1/entities/diff?time_a=T1&time_b=T2` — Entity-level diff
-- `GET /api/v1/entities/{path}/prim-diff?time_a=T1&time_b=T2` — Prim-level diff
-- `GET /api/v1/entities/{path}/restore?backup_time=T` — Single entity restore data
-- `GET /api/v1/entities/{path}/restore-prims?backup_time=T&relative_paths=p1,p2` — Prim-level selective restore
-- `GET /api/v1/entities/restore-all?backup_time=T` — All entities restore data
-- `POST /api/v1/raw-backup/files` — Raw backup file metadata insert
-- `GET /api/v1/raw-backup/times` — Raw backup timestamps
-- `GET /api/v1/raw-backup/diff?time_a=T1&time_b=T2` — Raw file diff
+`api_service/` — FastAPI. Endpoints are in `app/routers/entities.py` and `app/routers/raw_backup.py`.
 
 ### 3. Nucleus Pipeline (CLI)
 
@@ -74,20 +58,12 @@ Located at `api_service/`. Bridges Isaac Sim extensions and Nucleus Pipeline to 
 
 `Omniverse/omniverse-extensions/` — Isaac Sim 5.1.0 Extensions.
 
-**KKR.Lakehouse** (`lakehouse.proto/`) — *Deprecated, not part of active Task 1/2/3 workflow:*
-- Prim scan to Iceberg (experimental)
-- USD export to MinIO (experimental)
-
-**KKR.TimeTravel** (`time.travel/`) — *Task 3 (Time Travel Restore):*
-- Stage/Entity restore from Iceberg backup timestamps
-- 3 restore modes: Changes Only / Full Entity / Full All
-- Undo (memory snapshot) + Nucleus Reopen
-- API URL preset: Local (`localhost:8100`) / Docker (`lakehouse-api:8000`)
+**KKR.TimeTravel** (`time.travel/`) — *Task 3 (Time Travel Restore)*
 
 **Extension conventions:**
 - Menu: Tools > KKR-Tools submenu
 - stdlib only (`urllib`, no pip packages inside Isaac Sim)
-- API URL configurable via `LAKEHOUSE_API_URL` env var
+- USD Stage API는 반드시 main thread에서 호출 — `run_in_executor` 사용 금지 (무증상 데드락)
 
 ### 5. Web Dashboard
 
@@ -131,6 +107,8 @@ cd api_service && python -m pytest tests/ -v \
 - **중첩 Entity**: 자식 Entity 경계에서 override 수집 중단 (중복 방지)
 - **float 정규화**: `round(v, 9)` 적용 (false positive hash 방지)
 - **복원 검증**: restore 후 Stage에서 hash 재계산하여 backup hash와 비교
+- **Entity 감지 전략**: `Sdf.Layer` 순회가 primary (Reference/Payload 모두 감지). `Usd.Stage.Open(LoadNone)`은 Payload prim을 `GetChildren()`에서 숨기므로 primary로 사용 금지. Stage 순회는 sublayer prim 보충용으로만 사용.
+- **ListOp 완전 검사**: `referenceList`/`payloadList`의 `prependedItems` + `appendedItems` + `explicitItems` 모두 확인 필수 (Isaac Sim drag-and-drop은 `explicitItems` 사용)
 
 ## Key Conventions
 
