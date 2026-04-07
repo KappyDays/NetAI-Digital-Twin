@@ -11,24 +11,6 @@ import HealthPanel from "./HealthPanel.jsx";
 
 const NAV_ITEMS = [
   {
-    to: "/",
-    label: "Congestion",
-    icon: "\u2588\u2588",
-    description: "Spatio-temporal congestion heatmap",
-  },
-  {
-    to: "/static",
-    label: "Static Objects",
-    icon: "\u25a6",
-    description: "Browse static Prim data",
-  },
-  {
-    to: "/dynamic",
-    label: "Dynamic Objects",
-    icon: "\u25ce",
-    description: "Sensor data tables",
-  },
-  {
     to: "/query",
     label: "SQL Query",
     icon: "\u276f_",
@@ -51,6 +33,18 @@ const NAV_ITEMS = [
     label: "Raw Backup",
     icon: "\u2601",
     description: "Nucleus 폴더 Raw 백업 탐색기",
+  },
+  {
+    to: "/pipeline-guide",
+    label: "Pipeline Guide",
+    icon: "\u25B6",
+    description: "Nucleus Pipeline 커맨드 가이드",
+  },
+  {
+    to: "/pipeline",
+    label: "Pipeline Monitor",
+    icon: "\uD83D\uDCCA",
+    description: "5개 Iceberg 테이블 빠른 조회",
   },
 ];
 

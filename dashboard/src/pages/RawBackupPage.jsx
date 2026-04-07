@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import SqlResultTable from "../components/iceberg/SqlResultTable.jsx";
+import { getRawBackupTimes, getRawBackupList, getRawBackupDiff } from "../api.js";
 
 /**
  * RawBackupPage — View Nucleus raw backup snapshots stored in Iceberg.
@@ -9,8 +10,6 @@ import SqlResultTable from "../components/iceberg/SqlResultTable.jsx";
  *   - View file list at a specific backup time
  *   - Compare two backup times (diff: new/modified/deleted)
  */
-
-const API = "/api/v1";
 
 export default function RawBackupPage() {
   const [backupTimes, setBackupTimes] = useState([]);
@@ -32,8 +31,7 @@ export default function RawBackupPage() {
 
   const fetchBackupTimes = async () => {
     try {
-      const res = await fetch(`${API}/raw-backup/times`);
-      const data = await res.json();
+      const data = await getRawBackupTimes();
       setBackupTimes(data.backup_times || []);
       setSnapshots(data.snapshots || []);
     } catch (e) {
@@ -45,8 +43,7 @@ export default function RawBackupPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/raw-backup/list?backup_time=${encodeURIComponent(bt)}`);
-      const data = await res.json();
+      const data = await getRawBackupList(bt);
       setFiles(data.files || []);
       setSelectedTime(bt);
       setView("list");
@@ -62,10 +59,7 @@ export default function RawBackupPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${API}/raw-backup/diff?time_a=${encodeURIComponent(compareTimeA)}&time_b=${encodeURIComponent(compareTimeB)}`
-      );
-      const data = await res.json();
+      const data = await getRawBackupDiff(compareTimeA, compareTimeB);
       setDiffFiles(data.files || []);
       setDiffSummary({ new: data.new, modified: data.modified, deleted: data.deleted, unchanged: data.unchanged });
       setView("diff");

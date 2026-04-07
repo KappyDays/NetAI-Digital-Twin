@@ -1,4 +1,5 @@
 import React, { useState, useCallback } from "react";
+import { getEntityBackupTimes, getEntityDiff, getPrimDiff } from "../api.js";
 
 /**
  * EntityDiffPage — 3-Level drill-down Entity comparison view.
@@ -7,8 +8,6 @@ import React, { useState, useCallback } from "react";
  * Level 2: Click a changed entity → compare sub-prim hashes
  * Level 3: Click a changed sub-prim → view before/after JSON properties
  */
-
-const API_BASE = "";
 
 const STATUS_COLORS = {
   added: "#4caf50",
@@ -24,45 +23,34 @@ const STATUS_ICONS = {
   unchanged: "=",
 };
 
-// ─── API Helpers ──────────────────────────────────────────────────────
-
-async function fetchBackupTimes() {
-  const res = await fetch(`${API_BASE}/api/v1/entities/backup-times`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-async function fetchEntityDiff(timeA, timeB) {
-  const params = new URLSearchParams({ time_a: timeA, time_b: timeB });
-  const res = await fetch(`${API_BASE}/api/v1/entities/diff?${params}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
-async function fetchPrimDiff(entityPath, timeA, timeB) {
-  const safePath = entityPath.startsWith("/") ? entityPath.slice(1) : entityPath;
-  const params = new URLSearchParams({ time_a: timeA, time_b: timeB });
-  const res = await fetch(`${API_BASE}/api/v1/entities/${safePath}/prim-diff?${params}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json();
-}
-
 // ─── JSON Diff Highlighter ────────────────────────────────────────────
 
 function JsonDiffView({ jsonA, jsonB }) {
   let objA = {},
     objB = {};
+  let parseError = false;
   try {
     objA = JSON.parse(jsonA || "{}");
-  } catch {}
+  } catch (e) {
+    console.warn("JSON parse error (A):", e);
+    parseError = true;
+  }
   try {
     objB = JSON.parse(jsonB || "{}");
-  } catch {}
+  } catch (e) {
+    console.warn("JSON parse error (B):", e);
+    parseError = true;
+  }
 
   const allKeys = [...new Set([...Object.keys(objA), ...Object.keys(objB)])].sort();
 
   return (
     <div className="json-diff-container">
+      {parseError && (
+        <div style={{ color: "#ff9800", padding: "8px 12px", background: "#3a3a1a", borderRadius: "4px", marginBottom: "8px", fontSize: "0.85em", width: "100%" }}>
+          Invalid JSON data — some properties may not display correctly.
+        </div>
+      )}
       <div className="json-diff-side">
         <div className="json-diff-header">Before (Time A)</div>
         <pre className="json-diff-content">
@@ -133,7 +121,7 @@ export default function EntityDiffPage() {
     try {
       setLoading(true);
       setError(null);
-      const data = await fetchBackupTimes();
+      const data = await getEntityBackupTimes();
       setBackupTimes(data.backup_times || []);
       setBackupSources(data.backup_sources || []);
       if (data.backup_times?.length >= 2) {
@@ -160,7 +148,7 @@ export default function EntityDiffPage() {
       setPrimDiff(null);
       setSelectedEntity(null);
       setSelectedPrim(null);
-      const data = await fetchEntityDiff(timeA, timeB);
+      const data = await getEntityDiff(timeA, timeB);
       setEntityDiff(data);
     } catch (err) {
       setError(`Diff failed: ${err.message}`);
@@ -178,7 +166,7 @@ export default function EntityDiffPage() {
         setSelectedEntity(entity);
         setSelectedPrim(null);
         setPrimDiff(null);
-        const data = await fetchPrimDiff(entity.entity_path, timeA, timeB);
+        const data = await getPrimDiff(entity.entity_path, timeA, timeB);
         setPrimDiff(data);
       } catch (err) {
         setError(`Prim diff failed: ${err.message}`);

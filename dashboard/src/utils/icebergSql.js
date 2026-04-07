@@ -3,22 +3,53 @@
  * All Iceberg operations are executed via Trino SQL through the existing /api/v1/query endpoint.
  */
 
-// ── Table Discovery ──────────────────────────────────────────────
-export const listSchemas = () => `SHOW SCHEMAS FROM iceberg`;
-export const listTables = (schema) => `SHOW TABLES FROM iceberg.${schema}`;
-export const describeTable = (table) => `DESCRIBE ${table}`;
-export const showCreateTable = (table) => `SHOW CREATE TABLE ${table}`;
+// ── Input Validation ─────────────────────────────────────────────
+function validateTableId(table) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_."]*$/.test(table)) {
+    throw new Error(`Invalid table identifier: ${table}`);
+  }
+  return table;
+}
+
+function validateTimestamp(ts) {
+  if (!/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/.test(ts)) {
+    throw new Error(`Invalid timestamp: ${ts}`);
+  }
+  return ts;
+}
+
+function validateIdentifier(name) {
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
+    throw new Error(`Invalid identifier: ${name}`);
+  }
+  return name;
+}
+
+function validateNumber(val) {
+  if (!Number.isFinite(Number(val))) {
+    throw new Error(`Invalid number: ${val}`);
+  }
+  return val;
+}
+
+// ── Catalog / Namespace Discovery ────────────────────────────────
+export const listCatalogs = () => `SHOW CATALOGS`;
+export const listSchemas = (catalog = "polaris") => `SHOW SCHEMAS FROM ${validateIdentifier(catalog)}`;
+export const listTables = (schema, catalog = "polaris") => `SHOW TABLES FROM ${validateIdentifier(catalog)}.${validateIdentifier(schema)}`;
+export const describeTable = (table) => `DESCRIBE ${validateTableId(table)}`;
+export const showCreateTable = (table) => `SHOW CREATE TABLE ${validateTableId(table)}`;
 
 // ── Time Travel ──────────────────────────────────────────────────
 export const timeTravelQuery = (table, timestamp) =>
-  `SELECT * FROM ${table} FOR TIMESTAMP AS OF TIMESTAMP '${timestamp}' LIMIT 100`;
+  `SELECT * FROM ${validateTableId(table)} FOR TIMESTAMP AS OF TIMESTAMP '${validateTimestamp(timestamp)}' LIMIT 100`;
 
 export const snapshotTravelQuery = (table, snapshotId) =>
-  `SELECT * FROM ${table} FOR VERSION AS OF ${snapshotId} LIMIT 100`;
+  `SELECT * FROM ${validateTableId(table)} FOR VERSION AS OF ${validateNumber(snapshotId)} LIMIT 100`;
 
 // ── Metadata Tables ──────────────────────────────────────────────
 // Trino requires: iceberg.schema."table$meta" (only table name + $suffix in quotes)
 function metaTable(table, suffix) {
+  validateTableId(table);
   const parts = table.split(".");
   const tbl = parts.pop();
   return parts.join(".") + `.\"${tbl}$${suffix}\"`;
@@ -41,43 +72,43 @@ export const manifestsQuery = (table) =>
 
 // ── Compaction ───────────────────────────────────────────────────
 export const compactQuery = (table) =>
-  `ALTER TABLE ${table} EXECUTE optimize`;
+  `ALTER TABLE ${validateTableId(table)} EXECUTE optimize`;
 
 export const compactWithSize = (table, sizeMB) =>
-  `ALTER TABLE ${table} EXECUTE optimize(file_size_threshold => '${sizeMB}MB')`;
+  `ALTER TABLE ${validateTableId(table)} EXECUTE optimize(file_size_threshold => '${validateNumber(sizeMB)}MB')`;
 
 // ── Schema Evolution ─────────────────────────────────────────────
 export const addColumn = (table, name, type) =>
-  `ALTER TABLE ${table} ADD COLUMN ${name} ${type}`;
+  `ALTER TABLE ${validateTableId(table)} ADD COLUMN ${validateIdentifier(name)} ${validateIdentifier(type)}`;
 
 export const dropColumn = (table, name) =>
-  `ALTER TABLE ${table} DROP COLUMN ${name}`;
+  `ALTER TABLE ${validateTableId(table)} DROP COLUMN ${validateIdentifier(name)}`;
 
 export const renameColumn = (table, oldName, newName) =>
-  `ALTER TABLE ${table} RENAME COLUMN ${oldName} TO ${newName}`;
+  `ALTER TABLE ${validateTableId(table)} RENAME COLUMN ${validateIdentifier(oldName)} TO ${validateIdentifier(newName)}`;
 
 // ── Snapshot Maintenance ─────────────────────────────────────────
 export const expireSnapshots = (table, retention) =>
-  `ALTER TABLE ${table} EXECUTE expire_snapshots(retention_threshold => '${retention}')`;
+  `ALTER TABLE ${validateTableId(table)} EXECUTE expire_snapshots(retention_threshold => '${validateIdentifier(retention)}')`;
 
 // ── COW / MOR ────────────────────────────────────────────────────
 export const setWriteMode = (table, mode) =>
-  `ALTER TABLE ${table} SET PROPERTIES write_delete_mode = '${mode}'`;
+  `ALTER TABLE ${validateTableId(table)} SET PROPERTIES write_delete_mode = '${validateIdentifier(mode)}'`;
 
 // ── Sorting ──────────────────────────────────────────────────────
 export const setSortOrder = (table, columns) =>
-  `ALTER TABLE ${table} SET PROPERTIES sorted_by = ARRAY[${columns.map(c => `'${c}'`).join(", ")}]`;
+  `ALTER TABLE ${validateTableId(table)} SET PROPERTIES sorted_by = ARRAY[${columns.map(c => `'${validateIdentifier(c)}'`).join(", ")}]`;
 
 // ── Partition Evolution ──────────────────────────────────────────
 export const setPartitioning = (table, specs) =>
-  `ALTER TABLE ${table} SET PROPERTIES partitioning = ARRAY[${specs.map(s => `'${s}'`).join(", ")}]`;
+  `ALTER TABLE ${validateTableId(table)} SET PROPERTIES partitioning = ARRAY[${specs.map(s => `'${validateIdentifier(s)}'`).join(", ")}]`;
 
 // ── File size ────────────────────────────────────────────────────
 export const setTargetFileSize = (table, bytes) =>
-  `ALTER TABLE ${table} SET PROPERTIES target_max_file_size = '${bytes}'`;
+  `ALTER TABLE ${validateTableId(table)} SET PROPERTIES target_max_file_size = '${validateNumber(bytes)}'`;
 
 // ── Helpers ──────────────────────────────────────────────────────
-export const countRows = (table) => `SELECT COUNT(*) AS row_count FROM ${table}`;
+export const countRows = (table) => `SELECT COUNT(*) AS row_count FROM ${validateTableId(table)}`;
 
 /** Format bytes to human-readable */
 export function formatBytes(bytes) {

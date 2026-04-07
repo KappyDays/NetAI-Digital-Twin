@@ -16,6 +16,8 @@ writeTarget.kit = true
 "isaacsim.core.api" = {}
 "isaacsim.gui.components" = {}
 "omni.kit.uiapp" = {}
+"omni.physx" = {}
+"omni.timeline" = {}
 
 [[python.module]]
 name = "KKR_TimeTravel_python"

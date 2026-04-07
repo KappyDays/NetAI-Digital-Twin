@@ -19,16 +19,17 @@ export default function useTableList() {
         ? schemaRes.rows.map(r => r[schemaRes.columns[0]]).filter(s => s !== "information_schema")
         : [];
 
-      const all = [];
-      for (const schema of schemas) {
+      const results = await Promise.all(schemas.map(async (schema) => {
         try {
           const tRes = await executeQuery(listTables(schema));
           if (tRes.columns && tRes.rows) {
             const col = tRes.columns[0];
-            tRes.rows.forEach(r => all.push(`iceberg.${schema}.${r[col]}`));
+            return tRes.rows.map(r => `iceberg.${schema}.${r[col]}`);
           }
         } catch { /* skip schema */ }
-      }
+        return [];
+      }));
+      const all = results.flat();
       setTables(all);
       if (all.length > 0 && !selectedTable) setSelectedTable(all[0]);
     } catch (e) {

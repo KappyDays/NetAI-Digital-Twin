@@ -33,64 +33,40 @@ export const executeQuery = (sql) =>
     body: JSON.stringify({ sql }),
   });
 
-/** GET /api/v1/congestion — space congestion data */
-export const getCongestion = (params = {}) => {
-  const qs = new URLSearchParams(params).toString();
-  return request(`/congestion${qs ? `?${qs}` : ""}`);
+// ── Entity Backup ────────────────────────────────────────────────
+
+/** GET /api/v1/entities/backup-times */
+export const getEntityBackupTimes = () => request("/entities/backup-times");
+
+/** GET /api/v1/entities/list?backup_time=... */
+export const getEntityList = (backupTime) =>
+  request(`/entities/list?backup_time=${encodeURIComponent(backupTime)}`);
+
+/** GET /api/v1/entities/diff?time_a=...&time_b=... */
+export const getEntityDiff = (timeA, timeB) => {
+  const qs = new URLSearchParams({ time_a: timeA, time_b: timeB });
+  return request(`/entities/diff?${qs}`);
 };
 
-/** GET /api/v1/congestion/grid — 2D grid heatmap data */
-export const getCongestionGrid = (params = {}) => {
-  const qs = new URLSearchParams(params).toString();
-  return request(`/congestion/grid${qs ? `?${qs}` : ""}`);
+/** GET /api/v1/entities/{path}/prim-diff?time_a=...&time_b=... */
+export const getPrimDiff = (entityPath, timeA, timeB) => {
+  const safePath = entityPath.startsWith("/") ? entityPath.slice(1) : entityPath;
+  const qs = new URLSearchParams({ time_a: timeA, time_b: timeB });
+  return request(`/entities/${safePath}/prim-diff?${qs}`);
 };
 
-/** GET /api/v1/spaces/congestion/summary — detailed congestion summary */
-export const getCongestionSummary = () =>
-  request("/spaces/congestion/summary").catch(() => ({ spaces: [], total_spaces: 0 }));
+// ── Raw Backup ───────────────────────────────────────────────────
 
-/** GET /api/v1/static/spaces — list spaces */
-export const getSpaces = () => request("/static/spaces").catch(() => ({ spaces: [] }));
+/** GET /api/v1/raw-backup/times */
+export const getRawBackupTimes = () => request("/raw-backup/times");
 
-/** GET /api/v1/static/prims?space_id=... — get prims for a space */
-export const getStaticPrims = (spaceId) =>
-  request(`/static/prims?space_id=${encodeURIComponent(spaceId)}`).catch(() => ({
-    prims: [],
-  }));
+/** GET /api/v1/raw-backup/list?backup_time=... */
+export const getRawBackupList = (backupTime) =>
+  request(`/raw-backup/list?backup_time=${encodeURIComponent(backupTime)}`);
 
-/** GET /api/v1/dynamic-objects/tables — list dynamic object tables */
-export const getDynamicTables = () =>
-  request("/dynamic-objects/tables").catch(() => ({ tables: [] }));
-
-/** GET /api/v1/dynamic-objects/{table}/latest — latest sensor data */
-export const getDynamicLatest = (table) =>
-  request(`/dynamic-objects/${encodeURIComponent(table)}/latest`).catch(() => ({
-    data: [],
-  }));
-
-/** GET /api/v1/spaces/{spaceId}/objects — per-space static + dynamic objects */
-export const getSpaceObjects = (spaceId, params = {}) => {
-  const qs = new URLSearchParams(params).toString();
-  return request(
-    `/spaces/${encodeURIComponent(spaceId)}/objects${qs ? `?${qs}` : ""}`
-  ).catch(() => ({
-    space_id: spaceId,
-    static_objects: [],
-    dynamic_objects: [],
-    static_count: 0,
-    dynamic_count: 0,
-    total_count: 0,
-  }));
+/** GET /api/v1/raw-backup/diff?time_a=...&time_b=... */
+export const getRawBackupDiff = (timeA, timeB) => {
+  const qs = new URLSearchParams({ time_a: timeA, time_b: timeB });
+  return request(`/raw-backup/diff?${qs}`);
 };
 
-/** GET /api/v1/congestion/timeseries — congestion time-series data */
-export const getCongestionTimeseries = (params = {}) => {
-  const qs = new URLSearchParams();
-  if (params.space_id) qs.set("space_id", params.space_id);
-  if (params.start_time) qs.set("start_time", params.start_time);
-  if (params.end_time) qs.set("end_time", params.end_time);
-  if (params.bucket_seconds) qs.set("bucket_seconds", String(params.bucket_seconds));
-  if (params.limit) qs.set("limit", String(params.limit));
-  const q = qs.toString();
-  return request(`/congestion/timeseries${q ? `?${q}` : ""}`);
-};

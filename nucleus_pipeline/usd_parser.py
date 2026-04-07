@@ -15,6 +15,36 @@ import json
 import uuid
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Tier Classification Constants
+# ---------------------------------------------------------------------------
+
+# Tier 1: Hash + Restore fields (prim-level)
+TIER1_PRIM_KEYS = {
+    "typeName", "specifier", "kind", "instanceable", "active", "hidden",
+    "customData", "assetInfo", "apiSchemas", "variantSelection",
+    "documentation", "comment",
+}
+
+# Tier 2: Audit-only fields (prim-level) — excluded from hash
+TIER2_PRIM_KEYS = {
+    "references", "payload", "inherits", "specializes",
+    "variantSetNames", "primOrder", "propertyOrder",
+}
+
+# Tier 1: Hash + Restore fields (property-level info keys)
+TIER1_PROP_KEYS = {
+    "default", "timeSamples", "typeName", "targetPaths", "connectionPaths",
+    "custom", "bindMaterialAs", "customData", "colorSpace",
+    "displayGroup", "displayName", "documentation", "allowedTokens",
+    "comment", "hidden",
+}
+
+# Tier 2: Audit-only (property-level) — excluded from hash
+TIER2_PROP_KEYS = {
+    "variability",
+}
+
 
 def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
     """Parse a USD file and extract Entity records + Prim Snapshot records + asset URLs.
@@ -28,9 +58,24 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
         - prim_snapshots: list of dicts matching PrimSnapshotRecord schema
         - asset_urls: {entity_path: original_reference_or_payload_url}
     """
+    import os
+    import sys
+
     from pxr import Sdf
 
-    root_layer = Sdf.Layer.FindOrOpen(file_path)
+    # Suppress USD C++ composition warnings (metricsAssembler sublayer, missing payloads).
+    # nucleus_pipeline runs outside Isaac Sim, so these asset paths are unresolvable.
+    # os.dup2 redirects OS-level fd 2 (C++ TF_WARN writes directly to fd 2,
+    # bypassing Python's sys.stderr).
+    _old_fd = os.dup(2)
+    _devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(_devnull, 2)
+    try:
+        root_layer = Sdf.Layer.FindOrOpen(file_path)
+    finally:
+        os.dup2(_old_fd, 2)
+        os.close(_old_fd)
+        os.close(_devnull)
     if not root_layer:
         raise RuntimeError(f"Failed to open USD layer: {file_path}")
 
@@ -41,11 +86,21 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
     _traverse_layer_for_entities(root_layer, "/World", entity_paths)
 
     # Supplementary: Stage traversal for sublayer prims not in root layer.
-    # Uses default load (not LoadNone) so payload prims are visible.
+    # Uses LoadNone to suppress payload/sublayer load warnings — nucleus_pipeline
+    # runs outside Isaac Sim, so asset paths (Payload, metricsAssembler) are unresolvable.
     if root_layer.subLayerPaths:
         try:
             from pxr import Usd
-            stage = Usd.Stage.Open(root_layer)
+            # Suppress C++ TF_WARN via OS fd 2 redirect (same as above)
+            _old_fd2 = os.dup(2)
+            _devnull2 = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(_devnull2, 2)
+            try:
+                stage = Usd.Stage.Open(root_layer, load=Usd.Stage.LoadNone)
+            finally:
+                os.dup2(_old_fd2, 2)
+                os.close(_old_fd2)
+                os.close(_devnull2)
             stage_paths = {}
             _traverse_stage_for_entities(stage, "/World", stage_paths)
             for ep, info in stage_paths.items():
@@ -69,17 +124,20 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
         entity_overrides = _collect_overrides_recursive(root_layer, entity_path, entity_paths)
 
         # Compute combined hash from all sub-prim overrides
+        # Skip empty props (phantom specs) — must match verify_restore() in restore_engine.py
+        # Hash uses Tier 1 fields only (excludes "audit" key)
         all_hashes = []
         for rel_path, props in sorted(entity_overrides.items()):
-            props_json = json.dumps(props, sort_keys=True, default=str)
-            h = hashlib.sha256(props_json.encode()).hexdigest()[:16]
+            if not props:
+                continue
+            h = _compute_prim_hash(props)
             all_hashes.append(h)
 
             prim_snapshots.append({
                 "entity_path": entity_path,
                 "relative_path": rel_path[len(entity_path):] or "/",
                 "prim_type": props.get("typeName", "Unknown"),
-                "properties": props_json,
+                "properties": json.dumps(props, sort_keys=True, default=str),
                 "prim_hash": h,
             })
 
@@ -243,8 +301,8 @@ def _collect_overrides_recursive(
 
     # Extract overrides for this prim
     props = _extract_layer_overrides(layer_prim)
-    if props:
-        result[prim_path] = props
+    # Always include — even empty props — so _cleanup_residual_prims won't strip this prim
+    result[prim_path] = props
 
     # Recurse into children, stopping at nested entity boundaries
     for child_spec in layer_prim.nameChildren:
@@ -258,82 +316,166 @@ def _collect_overrides_recursive(
     return result
 
 
+def _serialize_list_op(list_op) -> dict | None:
+    """Serialize a USD ListOp to JSON dict, preserving structure."""
+    result = {}
+    for slot in ("explicitItems", "prependedItems", "appendedItems", "deletedItems", "orderedItems"):
+        items = list(getattr(list_op, slot, []))
+        if items:
+            key = slot.replace("Items", "")
+            result[key] = [str(i) for i in items]
+    return result if result else None
+
+
+def _serialize_field(val):
+    """Generic Sdf field -> JSON-safe value. Handles ListOp, SdfPath, VtDictionary, etc."""
+    if val is None:
+        return None
+    type_name = type(val).__name__
+    # ListOp types
+    if "ListOp" in type_name:
+        return _serialize_list_op(val)
+    # SdfPath
+    if type_name == "Path":
+        return str(val)
+    # SdfReference / SdfPayload
+    if type_name in ("Reference", "Payload"):
+        result = {"assetPath": str(val.assetPath)}
+        if val.primPath:
+            result["primPath"] = str(val.primPath)
+        return result
+    # VtDictionary / dict -> recursive
+    if isinstance(val, dict):
+        return {str(k): _serialize_field(v) for k, v in val.items()}
+    # SdfValueBlock
+    if type_name == "ValueBlock":
+        return {"_blocked": True}
+    # TfEnum
+    if type_name == "Enum":
+        return str(val)
+    # Specifier enum
+    if type_name == "Specifier":
+        specifier_map = {0: "def", 1: "over", 2: "class"}
+        return specifier_map.get(val.value if hasattr(val, 'value') else int(val), str(val))
+    # Fall back to existing _to_json_value
+    return _to_json_value(val)
+
+
+def _compute_prim_hash(props: dict) -> str:
+    """Compute hash from Tier 1 fields only (exclude audit)."""
+    hash_data = {k: v for k, v in props.items() if k != "audit"}
+    props_json = json.dumps(hash_data, sort_keys=True, default=str)
+    return hashlib.sha256(props_json.encode()).hexdigest()[:16]
+
+
 def _extract_layer_overrides(layer_prim) -> dict[str, Any]:
-    """Extract all authored overrides from a Sdf.PrimSpec.
+    """Extract ALL authored overrides from Sdf.PrimSpec using field-driven approach.
 
-    Captures:
-    - Attributes (xformOp:translate, visibility, purpose, etc.)
-    - Relationships (material:binding, etc.)
-    - Metadata (kind, instanceable, active, hidden, customData, assetInfo)
+    Produces nested dict with Tier 1 (hash+restore) and Tier 2 (audit) separation.
+
+    Output structure:
+        {
+            "typeName": "Xform",
+            "specifier": "over",
+            "meta": {"kind": "component", ...},
+            "props": {
+                "xformOp:translate": {"value": [...], "type": "double3"},
+                "material:binding": {"targets": {"explicit": [...]}, "type": "rel", "metadata": {...}}
+            },
+            "audit": {
+                "prim": {"references": ..., "propertyOrder": ...},
+                "props": {"xformOp:translate": {"variability": "Varying"}}
+            }
+        }
     """
+    result = {}
+    meta = {}
+    audit_prim = {}
+
+    # 1. Prim-level info keys — field-driven
+    for key in layer_prim.ListInfoKeys():
+        val = layer_prim.GetInfo(key)
+        if val is None:
+            continue
+        serialized = _serialize_field(val)
+        if serialized is None:
+            continue
+
+        if key == "typeName":
+            result["typeName"] = serialized
+        elif key == "specifier":
+            result["specifier"] = serialized
+        elif key in TIER1_PRIM_KEYS:
+            meta[key] = serialized
+        elif key in TIER2_PRIM_KEYS:
+            audit_prim[key] = serialized
+        else:
+            # Unknown keys -> audit (future-proof)
+            audit_prim[key] = serialized
+
+    if meta:
+        result["meta"] = meta
+
+    # 2. Property-level — field-driven
     props = {}
+    audit_props = {}
 
-    # Type name
-    type_name = layer_prim.typeName
-    if type_name:
-        props["typeName"] = type_name
-
-    # Note: specifier (def/over/class) is intentionally NOT captured here.
-    # It is Sdf layer metadata that cannot be applied via prim attribute API,
-    # and including it would cause hash divergence with restore_engine.py.
-
-    # Authored attribute overrides
     for prop_spec in layer_prim.properties:
         prop_name = prop_spec.name
+        prop_data = {}
+        prop_audit = {}
 
-        # AttributeSpec — has default value
-        if hasattr(prop_spec, "default") and prop_spec.default is not None:
-            props[prop_name] = _to_json_value(prop_spec.default)
-        elif hasattr(prop_spec, "HasInfo") and prop_spec.HasInfo("timeSamples"):
-            ts = prop_spec.GetInfo("timeSamples")
-            if ts:
-                props[prop_name] = {str(k): _to_json_value(v) for k, v in ts.items()}
-        elif hasattr(prop_spec, "targetPathList"):
-            targets = list(prop_spec.targetPathList.explicitItems)
-            if targets:
-                props[f"rel:{prop_name}"] = [str(t) for t in targets]
+        for info_key in prop_spec.ListInfoKeys():
+            try:
+                val = prop_spec.GetInfo(info_key)
+            except Exception:
+                continue  # Skip unsupported crate file types (e.g. enum value 0)
+            if val is None:
+                continue
+            serialized = _serialize_field(val)
+            if serialized is None:
+                continue
 
-    # Metadata
-    for key in layer_prim.ListInfoKeys():
-        if key == "kind":
-            props["meta:kind"] = layer_prim.GetInfo("kind")
-        elif key == "instanceable":
-            props["meta:instanceable"] = layer_prim.GetInfo("instanceable")
-        elif key == "active":
-            props["meta:active"] = layer_prim.GetInfo("active")
-        elif key == "hidden":
-            props["meta:hidden"] = layer_prim.GetInfo("hidden")
-        elif key == "customData":
-            cd = layer_prim.GetInfo("customData")
-            if cd:
-                props["meta:customData"] = {str(k): str(v) for k, v in cd.items()}
-        elif key == "assetInfo":
-            ai = layer_prim.GetInfo("assetInfo")
-            if ai:
-                props["meta:assetInfo"] = {str(k): str(v) for k, v in ai.items()}
-        elif key == "apiSchemas":
-            api_list_op = layer_prim.GetInfo("apiSchemas")
-            api_data = {}
-            if hasattr(api_list_op, "prependedItems") and api_list_op.prependedItems:
-                api_data["prepend"] = [str(t) for t in api_list_op.prependedItems]
-            if hasattr(api_list_op, "deletedItems") and api_list_op.deletedItems:
-                api_data["delete"] = [str(t) for t in api_list_op.deletedItems]
-            if hasattr(api_list_op, "appendedItems") and api_list_op.appendedItems:
-                api_data["append"] = [str(t) for t in api_list_op.appendedItems]
-            if hasattr(api_list_op, "explicitItems") and api_list_op.explicitItems:
-                api_data["explicit"] = [str(t) for t in api_list_op.explicitItems]
-            if api_data:
-                props["meta:apiSchemas"] = api_data
-        elif key == "variantSetNames":
-            vs = layer_prim.GetInfo("variantSetNames")
-            if vs:
-                props["meta:variantSetNames"] = list(vs)
-        elif key == "variantSelection":
-            vsel = layer_prim.GetInfo("variantSelection")
-            if vsel:
-                props["meta:variantSelection"] = dict(vsel)
+            if info_key == "default":
+                prop_data["value"] = _to_json_value(val)  # Use existing precise serializer
+            elif info_key == "timeSamples":
+                prop_data["timeSamples"] = {str(k): _to_json_value(v) for k, v in val.items()}
+            elif info_key == "typeName":
+                prop_data["type"] = str(val)
+            elif info_key == "targetPaths":
+                prop_data["targets"] = _serialize_list_op(val) if hasattr(val, "explicitItems") else serialized
+                prop_data["type"] = "rel"
+            elif info_key == "connectionPaths":
+                prop_data["connections"] = _serialize_list_op(val) if hasattr(val, "explicitItems") else serialized
+            elif info_key == "custom":
+                prop_data["custom"] = serialized
+            elif info_key in TIER1_PROP_KEYS:
+                # All other Tier 1 property metadata (bindMaterialAs, customData, etc.)
+                prop_data.setdefault("metadata", {})[info_key] = serialized
+            elif info_key in TIER2_PROP_KEYS:
+                prop_audit[info_key] = serialized
+            else:
+                # Unknown property keys -> audit
+                prop_audit[info_key] = serialized
 
-    return props
+        if prop_data:
+            props[prop_name] = prop_data
+        if prop_audit:
+            audit_props[prop_name] = prop_audit
+
+    if props:
+        result["props"] = props
+
+    # Build audit section
+    audit = {}
+    if audit_prim:
+        audit["prim"] = audit_prim
+    if audit_props:
+        audit["props"] = audit_props
+    if audit:
+        result["audit"] = audit
+
+    return result
 
 
 def _to_json_value(val: Any) -> Any:
@@ -367,7 +509,10 @@ def _to_json_value(val: Any) -> Any:
     if hasattr(val, "__len__"):
         result = []
         for v in val:
-            if hasattr(v, "__len__"):
+            # String-like types (str, TfToken) — keep as single string, not char array
+            if isinstance(v, str) or type(v).__name__ in ("TfToken", "Token"):
+                result.append(str(v))
+            elif hasattr(v, "__len__"):
                 # Nested vector (Vec3f, Vec2f, etc.) — decompose to components
                 try:
                     result.append([round(float(c), 9) for c in v])
@@ -387,20 +532,29 @@ def _extract_depends_on(
 ) -> list[str]:
     """Extract cross-entity dependencies from relationship properties.
 
-    Scans all overrides for keys starting with "rel:" and checks if their target
-    paths belong to a different entity in entity_paths.
+    Scans all overrides for relationship targets (nested dict: props.{name}.targets)
+    and checks if their target paths belong to a different entity in entity_paths.
 
     Returns:
         Sorted, deduplicated list of entity_paths this entity depends on.
     """
     deps: set[str] = set()
     for props in entity_overrides.values():
-        for key, val in props.items():
-            if not key.startswith("rel:"):
+        props_dict = props.get("props", {})
+        for prop_name, prop_data in props_dict.items():
+            targets_data = prop_data.get("targets")
+            if not targets_data:
                 continue
-            targets = val if isinstance(val, list) else [val]
-            for target in targets:
-                target_str = str(target)
+            # targets_data is a ListOp dict like {"explicit": [...], "prepended": [...]}
+            target_paths = []
+            if isinstance(targets_data, dict):
+                for slot_targets in targets_data.values():
+                    if isinstance(slot_targets, list):
+                        target_paths.extend(slot_targets)
+            elif isinstance(targets_data, list):
+                target_paths = targets_data
+
+            for target_str in target_paths:
                 # Find the entity this target belongs to (longest prefix match)
                 matched = None
                 for ep in entity_paths:
