@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Overview
 
 NetAI-Digital-Twin is a network AI digital twin platform built on an **Iceberg Lakehouse** data infrastructure with **NVIDIA Omniverse/Isaac Sim** integration. The active branch (`lab/exts-lakehouse`) focuses on the Lakehouse stack only.
@@ -32,14 +30,22 @@ chmod +x scripts/*.sh start.sh
 | Lakehouse API | 8100 | FastAPI middleware (mapped from 8000) |
 | Dashboard | 3000 | React web dashboard (nginx) |
 
-**Trino naming:**
-- Catalog: `polaris` (Trino properties file: `trino/catalog/polaris.properties`)
-- Namespace: `netai`
-- Tables: `polaris.netai.entities`, `polaris.netai.prim_snapshots`, `polaris.netai.raw_backup_files`
+**Trino naming:** Catalog `polaris`, Namespace `netai` (e.g. `polaris.netai.<table>`). Tables are defined in code and SQL scripts.
 
 ### 2. API Service (FastAPI Middleware)
 
-`api_service/` — FastAPI. Endpoints are in `app/routers/entities.py` and `app/routers/raw_backup.py`.
+`api_service/` — FastAPI. Main routers: `app/routers/entities.py` (Entity backup/restore/diff + Simulation API) and `app/routers/raw_backup.py` (Raw file backup). Additional: `app/api/v1/query.py` (ad-hoc SQL), `app/api/v1/upload.py` (USD upload/download).
+
+**Iceberg Tables (6 active):**
+
+| Table | Task | Purpose |
+|-------|------|---------|
+| `entities` | Task 2 | Entity metadata + backup snapshots |
+| `prim_snapshots` | Task 2 | Prim hierarchy snapshots |
+| `raw_backup_files` | Task 1 | Nucleus folder file metadata |
+| `simulation_sessions` | Task 3 | M&S capture session metadata |
+| `simulation_deltas` | Task 3 | M&S property delta records |
+| `simulation_keyframes` | Task 3 | M&S keyframe full state snapshots |
 
 ### 3. Nucleus Pipeline (CLI)
 
@@ -58,33 +64,15 @@ chmod +x scripts/*.sh start.sh
 
 `Omniverse/omniverse-extensions/` — Isaac Sim 5.1.0 Extensions.
 
-**KKR.TimeTravel** (`time.travel/`) — *Task 3 (Time Travel Restore)*
+**KKR.TimeTravel** (`time.travel/`) — *Task 3 (Time Travel Restore) + M&S Capture & Replay*
 
 **Extension conventions:**
-- Menu: Tools > KKR-Tools submenu
 - stdlib only (`urllib`, no pip packages inside Isaac Sim)
-- USD Stage API는 반드시 main thread에서 호출 — `run_in_executor` 사용 금지 (무증상 데드락)
+- PhysX 콜백 내 JSON/네트워크/Stage traversal 금지 — cached attr.Get()만 허용
 
 ### 5. Web Dashboard
 
-`dashboard/` — React SPA (Vite) with Entity Diff viewer, Raw Backup explorer, and Trino SQL interface. Served via nginx reverse proxy on port 3000.
-
-## Data Flow
-
-```
-Nucleus Pipeline (Task 1) -> Lakehouse API (:8100) -> MinIO/S3 (raw files)
-                                                    -> Iceberg (raw_backup_files)
-
-Nucleus Pipeline (Task 2) -> Lakehouse API (:8100) -> Iceberg (entities + prim_snapshots)
-                                                    -> MinIO/S3 (USD files)
-
-Isaac Sim (KKR.TimeTravel) -> Lakehouse API (:8100) -> Iceberg (read backup data)
-                                                     -> Stage (apply overrides)
-
-Trino (SQL:8900) -> Polaris REST Catalog -> MinIO/S3 (Iceberg tables)
-
-Web Dashboard (:3000) -> nginx -> Lakehouse API (:8100) -> Trino -> Iceberg
-```
+`dashboard/` — React SPA (Vite) with Entity Diff viewer, Raw Backup explorer, Pipeline Monitor (5 Iceberg tables live view), and Trino SQL interface. Served via nginx reverse proxy on port 3000.
 
 ## Testing
 
@@ -95,36 +83,67 @@ cd api_service && python -m pytest tests/ -v \
   --ignore=tests/test_dynamic_query_service.py
 ```
 
-> Note: `test_dynamic_*` and `test_static_query_service.py` 등 레거시 테스트는 삭제된 모듈을 참조하여 실패함 (미사용 Dynamic/Static 서비스). Entity 관련 테스트는 정상 통과.
+> Note: Legacy tests such as `test_dynamic_*` and `test_static_query_service.py` fail because they reference deleted modules (unused Dynamic/Static services). Entity-related tests pass normally.
 
 ## Entity Model
 
-- **Entity boundary**: Reference/Payload composition arc 또는 `/World` 직속 Container Xform
-- **Override-only**: root layer override만 추출 (sublayer/session layer 미포함)
-- **entity_id**: `uuid5(NAMESPACE_URL, entity_path)` — deterministic, 백업 간 동일 ID
-- **entity_hash**: SHA-256(sorted sub-prim hashes)[:16] — 변경 감지용
-- **depends_on**: relationship target path에서 교차 Entity 의존성 추출
-- **중첩 Entity**: 자식 Entity 경계에서 override 수집 중단 (중복 방지)
-- **float 정규화**: `round(v, 9)` 적용 (false positive hash 방지)
-- **복원 검증**: restore 후 Stage에서 hash 재계산하여 backup hash와 비교
-- **Entity 감지 전략**: `Sdf.Layer` 순회가 primary (Reference/Payload 모두 감지). `Usd.Stage.Open(LoadNone)`은 Payload prim을 `GetChildren()`에서 숨기므로 primary로 사용 금지. Stage 순회는 sublayer prim 보충용으로만 사용.
-- **ListOp 완전 검사**: `referenceList`/`payloadList`의 `prependedItems` + `appendedItems` + `explicitItems` 모두 확인 필수 (Isaac Sim drag-and-drop은 `explicitItems` 사용)
+- **Entity boundary**: Reference/Payload composition arc or Container Xform directly under `/World`
+- **Override-only**: Extracts only root layer overrides (excludes sublayer/session layer)
+- **entity_id**: `uuid5(NAMESPACE_URL, entity_path)` — deterministic, same ID across backups
+- **entity_hash**: SHA-256(sorted sub-prim hashes)[:16] — Tier 1 fields only (audit excluded)
+- **depends_on**: Extracts cross-Entity dependencies from relationship target paths
+- **Nested Entity**: Stops collecting overrides at child Entity boundaries (prevents duplication)
+- **float normalization**: `round(v, 9)` applied (prevents false positive hash)
+- **Restore verification**: After restore, recalculates hash from Stage and compares with backup hash
+
+### Property Extraction: Field-Driven + 2-Tier Architecture
+
+Extraction uses `ListInfoKeys()` on both `Sdf.PrimSpec` and `Sdf.PropertySpec` levels (field-driven, not hand-picked).
+
+**Data format**: JSON nested dict (not flat prefix dict):
+```json
+{
+  "typeName": "Xform", "specifier": "over",
+  "meta": {"kind": "...", "instanceable": true, ...},
+  "props": {"xformOp:translate": {"value": [...], "type": "double3"}, "material:binding": {"targets": {...}, "type": "rel", "metadata": {"bindMaterialAs": "strongerThanDescendants"}}},
+  "audit": {"prim": {"references": ...}, "props": {"attr": {"variability": "Varying"}}}
+}
+```
+
+**Tier classification**:
+- **Tier 1 (hash + restore)**: typeName, specifier, kind, instanceable, active, hidden, customData, assetInfo, apiSchemas, variantSelection, documentation, comment + property values/targets/connections/metadata (bindMaterialAs, colorSpace, displayGroup, etc.)
+- **Tier 2 (audit only)**: references, payload, inherits, specializes, variantSetNames, primOrder, propertyOrder, variability
+- **Legacy compat**: `_is_nested_format()` detects old flat dict → `_apply_properties_legacy()` fallback
 
 ## Key Conventions
 
 - `docker compose` must run from `Lakehouse/Iceberg/`, NOT project root
-- Environment configs use `.env` files (never committed; see `example.env`)
 - All container healthchecks use `127.0.0.1` instead of `localhost` (Tailscale DNS interference)
 - MinIO requires `MINIO_DOMAIN=minio` + Docker network aliases for virtual-hosted-style S3 access
-- Polaris needs `CATALOG_MANAGE_CONTENT` grant after each container recreation
+- Polaris needs `CATALOG_MANAGE_CONTENT` grant after each container recreation — `init-polaris-catalog.sh` re-grants
 - Pydantic models with `Field(alias=...)` must use `model_dump(by_alias=True)` when passing to Iceberg
-- Active branch: `lab/exts-lakehouse` (UWB, TwinX, Datacenter, DeltaLake removed)
+- `_extract_layer_overrides()` in `usd_parser.py` and `restore_engine.py` must stay in sync — field-driven `ListInfoKeys()` approach producing identical nested dict output. Shared functions: `_serialize_field()`, `_serialize_list_op()`, `_to_json_value()`, `_compute_prim_hash()`, Tier constants (TIER1/2_PRIM_KEYS, TIER1/2_PROP_KEYS)
+- **Iceberg 테이블 변경 시 Dashboard 동기화 필수**: 테이블 추가/삭제/스키마 변경 시 아래 3곳을 반드시 함께 업데이트
+  - `dashboard/src/components/QueryPanel.jsx` — `PRESET_GROUPS`의 Discovery(DESCRIBE), Data Preview(SELECT), Clear Data(DELETE) 프리셋
+  - `dashboard/src/pages/PipelineMonitorPage.jsx` — `TABLES` 객체의 Task별 테이블 목록 (sql, deleteSql)
+  - `dashboard/src/utils/icebergSql.js` — 필요 시 SQL 템플릿 함수 추가
 
-## Deployment Gotchas
+## Agent Delegation Guide
 
-- Windows to Linux: use `git clone -b <branch>` (not rsync) to auto-apply `.gitattributes` LF normalization
-- Docker image tags from AI code generation may reference future dates — verify tags exist or use `:latest`
-- `docker-compose.yml` healthcheck overrides Dockerfile HEALTHCHECK — check both when debugging
-- Polaris `CATALOG_MANAGE_CONTENT` grant resets on container recreation — `init-polaris-catalog.sh` should re-grant
-- See `Lakehouse/Iceberg/DEPLOYMENT_GUIDE.md` for full server deployment guide
-- See `docs/E2E_SCENARIO_GUIDE.md` for Task 1/2/3 end-to-end scenario guide with Iceberg query examples
+### Available Agents
+
+| Agent | Scope | Model | When to Use |
+|-------|-------|-------|-------------|
+| `lakehouse-backend` | api_service/ + Lakehouse/Iceberg/ | Sonnet (↑Opus) | API endpoints, schemas, Trino SQL, Docker infra, stack ops |
+| `isaac-sim-expert` | time.travel/ + nucleus_pipeline/ | **Opus** | USD parsing, M&S capture/replay, Stage restore, Entity detection |
+| `frontend` | dashboard/ | Sonnet (↑Opus) | React pages, API contract consumption, Iceberg visualization |
+
+### Critical Cross-Module Rules
+
+1. **Extraction sync**: `usd_parser.py` and `restore_engine.py` share 6 identical functions (`_extract_layer_overrides`, `_serialize_field`, `_serialize_list_op`, `_to_json_value`, `_compute_prim_hash`, Tier constants) — `isaac-sim-expert` owns both sides
+2. **API contract**: `entities.py` response change → update `dashboard/src/api.js` (`frontend`) + Extension `api_client.py` (`isaac-sim-expert`)
+3. **Simulation flush contract**: `capture_coordinator.py` flush format change → sync `entities.py` routing logic
+4. **Runner WebSocket contract**: `runner_server.py` protocol change → sync `PipelineGuidePage.jsx`
+5. **Inactive Extensions (do not modify)**: `physics.simulation`, `dynamic.tracker`, `space.heatmap`, `object.detector`, `stagegraph.viewer`, `lakehouse.proto` — legacy
+6. **Iceberg 테이블 변경**: `entities.py` DDL 변경 → `QueryPanel.jsx` 프리셋 + `PipelineMonitorPage.jsx` 테이블 목록 동기화 (`lakehouse-backend` + `frontend`)
+

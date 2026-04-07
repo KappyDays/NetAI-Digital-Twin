@@ -11,19 +11,17 @@ Endpoints:
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.sql_utils import esc, validate_timestamp
 from app.core.trino_config import trino_cursor, init_namespace
 
 from app.schemas.raw_backup import (
     RawBackupDiffResponse,
     RawBackupFilesRequest,
     RawBackupFilesResponse,
-    RawBackupTimesResponse,
 )
 
 router = APIRouter(tags=["Raw Backup"])
@@ -94,7 +92,7 @@ async def backup_files(req: RawBackupFilesRequest):
 
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
-    backup_ts = _validate_timestamp(req.backup_time)
+    backup_ts = validate_timestamp(req.backup_time)
 
     files_inserted = 0
     batch_size = 500
@@ -105,12 +103,12 @@ async def backup_files(req: RawBackupFilesRequest):
             batch = req.files[i : i + batch_size]
             values_rows = []
             for f in batch:
-                s3_val = "NULL" if f.s3_key is None else f"'{_esc(f.s3_key)}'"
+                s3_val = "NULL" if f.s3_key is None else f"'{esc(f.s3_key)}'"
                 row = (
-                    f"(TIMESTAMP '{_esc(backup_ts)}', '{_esc(req.folder_path)}', "
-                    f"'{_esc(f.file_path)}', '{_esc(f.file_name)}', "
-                    f"'{_esc(f.file_extension)}', {f.file_size}, '{_esc(f.modified_time)}', "
-                    f"{s3_val}, '{_esc(f.status)}', '{_esc(req.backup_source)}')"
+                    f"(TIMESTAMP '{esc(backup_ts)}', '{esc(req.folder_path)}', "
+                    f"'{esc(f.file_path)}', '{esc(f.file_name)}', "
+                    f"'{esc(f.file_extension)}', {f.file_size}, '{esc(f.modified_time)}', "
+                    f"{s3_val}, '{esc(f.status)}', '{esc(req.backup_source)}')"
                 )
                 values_rows.append(row)
 
@@ -150,7 +148,7 @@ async def latest_files(
 
     folder_filter = ""
     if folder_path:
-        folder_filter = f" AND folder_path = '{_esc(folder_path)}'"
+        folder_filter = f" AND folder_path = '{esc(folder_path)}'"
 
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
@@ -191,7 +189,7 @@ async def latest_files(
 @router.get("/raw-backup/list")
 async def list_files(backup_time: str = Query(..., description="Backup timestamp")):
     """List all files at a specific backup time (excluding deleted)."""
-    backup_time = _validate_timestamp(backup_time)
+    backup_time = validate_timestamp(backup_time)
     ensure_raw_backup_table()
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
@@ -201,7 +199,7 @@ async def list_files(backup_time: str = Query(..., description="Backup timestamp
             f"SELECT backup_time, file_path, file_name, file_extension, "
             f"file_size, modified_time, s3_key, status "
             f"FROM {catalog}.{ns}.raw_backup_files "
-            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}' "
+            f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}' "
             f"AND status != 'deleted' "
             f"ORDER BY file_path"
         )
@@ -255,8 +253,8 @@ async def diff_backup(
     time_b: str = Query(..., description="Second backup timestamp"),
 ):
     """Return files at time_b with status new/modified/deleted."""
-    time_a = _validate_timestamp(time_a)
-    time_b = _validate_timestamp(time_b)
+    time_a = validate_timestamp(time_a)
+    time_b = validate_timestamp(time_b)
     ensure_raw_backup_table()
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
@@ -266,7 +264,7 @@ async def diff_backup(
             f"SELECT file_path, file_name, file_extension, file_size, "
             f"modified_time, s3_key, status "
             f"FROM {catalog}.{ns}.raw_backup_files "
-            f"WHERE backup_time = TIMESTAMP '{_esc(time_b)}' "
+            f"WHERE backup_time = TIMESTAMP '{esc(time_b)}' "
             f"AND status IN ('new', 'modified', 'deleted')"
         )
         cols = [desc[0] for desc in cursor.description]
@@ -302,23 +300,3 @@ async def diff_backup(
         unchanged=unchanged_count,
         files=files,
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════
-#  Utility
-# ═══════════════════════════════════════════════════════════════════════
-
-def _esc(val: str) -> str:
-    """Escape single quotes for Trino SQL string literals."""
-    if val is None:
-        return ""
-    return str(val).replace("'", "''")
-
-
-def _validate_timestamp(ts: str) -> str:
-    """Validate and normalize a timestamp string to prevent SQL injection."""
-    try:
-        dt = datetime.fromisoformat(ts.replace(" ", "T").rstrip("Z"))
-        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid timestamp format")

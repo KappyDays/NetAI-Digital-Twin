@@ -1,28 +1,34 @@
 """
-Entity-Level 3-Level Backup/Restore/Diff Router.
+Entity-Level Backup/Restore/Diff + Simulation Router.
 
 Endpoints:
-    POST /api/v1/entities/backup        — Bulk insert entities + prim snapshots
-    GET  /api/v1/entities/list           — List entities at a backup time
-    GET  /api/v1/entities/diff           — Compare entities between two backup times
-    GET  /api/v1/entities/backup-times   — List available backup timestamps
+    POST /api/v1/entities/backup             — Bulk insert entities + prim snapshots
+    GET  /api/v1/entities/list               — List entities at a backup time
+    GET  /api/v1/entities/diff               — Compare entities between two backup times
+    GET  /api/v1/entities/backup-times       — List available backup timestamps
     GET  /api/v1/entities/{path}/prim-diff   — Compare sub-prims for an entity
     GET  /api/v1/entities/{path}/restore     — Get restore data for an entity
-    GET  /api/v1/entities/restore-all    — Get ALL entities + prims at a backup time
-    POST /api/v1/dynamic/sample-ingest   — Generate sample IoT data
+    GET  /api/v1/entities/restore-all        — Get ALL entities + prims at a backup time
+    GET  /api/v1/entities/{path}/restore-prims — Selective prim restoration
+    POST /api/v1/realtime/flush              — Flush simulation delta batch to Iceberg
+    POST /api/v1/simulation/sessions         — Create simulation session
+    PATCH /api/v1/simulation/sessions/{id}   — Update simulation session
+    GET  /api/v1/simulation/sessions         — List simulation sessions
+    GET  /api/v1/simulation/deltas           — Query simulation deltas (NDJSON)
+    POST /api/v1/simulation/keyframes        — Store simulation keyframe
 """
 
 from __future__ import annotations
 
-import re
-import random
-import uuid
+import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.core.sql_utils import esc, validate_timestamp
 from app.core.trino_config import trino_cursor, init_namespace
 
 from app.schemas.entities import (
@@ -35,14 +41,17 @@ from app.schemas.entities import (
     EntityRestoreResponse,
     PrimDiffItem,
     PrimDiffResponse,
-    SampleIoTRequest,
-    SampleIoTResponse,
+    SimulationSessionCreate,
+    SimulationSessionUpdate,
+    SimulationSessionResponse,
+    SimulationKeyframeCreate,
 )
 
 router = APIRouter(tags=["Entity Backup"])
 
-# Module-level flag to avoid repeated DDL on every request
+# Module-level flags to avoid repeated DDL on every request
 _tables_ensured = False
+_simulation_tables_ensured = False
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Table Bootstrap
@@ -82,10 +91,29 @@ CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.prim_snapshots (
 """
 
 
+def _get_table_columns(cursor, catalog: str, ns: str, table: str) -> list[str]:
+    """Get existing column names for a table. Returns empty list if table doesn't exist."""
+    try:
+        cursor.execute(f"SHOW COLUMNS FROM {catalog}.{ns}.{table}")
+        return [row[0] for row in cursor.fetchall()]
+    except Exception:
+        return []
+
+
+# Expected columns per table — used for schema migration checks
+_ENTITIES_EXPECTED_COLS = [
+    "entity_id", "entity_path", "entity_type", "source_type", "source_asset",
+    "is_dynamic", "dynamic_table", "child_count", "entity_hash", "usd_file_path",
+    "backup_source", "depends_on", "backup_time",
+]
+
+
 def ensure_entity_tables() -> dict:
     """Create entities and prim_snapshots tables if they don't exist.
 
-    Uses a module-level flag to skip redundant DDL after first success.
+    Also checks for missing columns (schema drift from earlier versions)
+    and recreates tables if needed. Uses a module-level flag to skip
+    redundant checks after first success.
     """
     global _tables_ensured
     if _tables_ensured:
@@ -107,10 +135,104 @@ def ensure_entity_tables() -> dict:
                 results[name] = f"error: {exc}"
                 logger.warning("Table creation issue for %s: %s", name, exc)
 
-    if all(v == "ok" for v in results.values()):
+        # Schema migration: check if entities table has all expected columns
+        existing_cols = _get_table_columns(cursor, catalog, ns, "entities")
+        if existing_cols:
+            missing = [c for c in _ENTITIES_EXPECTED_COLS if c not in existing_cols]
+            if missing:
+                logger.warning(
+                    "entities table missing columns: %s — dropping and recreating",
+                    missing,
+                )
+                try:
+                    cursor.execute(f"DROP TABLE IF EXISTS {catalog}.{ns}.entities")
+                    cursor.fetchall()
+                    cursor.execute(ENTITIES_DDL.format(catalog=catalog, namespace=ns))
+                    cursor.fetchall()
+                    results["entities"] = "ok (recreated)"
+                    logger.info("Recreated entities table with updated schema")
+                except Exception as exc:
+                    results["entities"] = f"error (migration): {exc}"
+                    logger.error("Failed to recreate entities table: %s", exc)
+
+    if all(v.startswith("ok") for v in results.values()):
         _tables_ensured = True
 
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Simulation Tables Bootstrap
+# ═══════════════════════════════════════════════════════════════════════
+
+SIMULATION_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.simulation_sessions (
+    simulation_id VARCHAR,
+    scene_path VARCHAR,
+    start_time TIMESTAMP(6) WITH TIME ZONE,
+    end_time TIMESTAMP(6) WITH TIME ZONE,
+    total_deltas BIGINT,
+    entity_count INTEGER,
+    status VARCHAR
+)
+"""
+
+SIMULATION_DELTAS_DDL = """
+CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.simulation_deltas (
+    capture_time TIMESTAMP(6) WITH TIME ZONE,
+    simulation_id VARCHAR,
+    entity_id VARCHAR,
+    batch_id VARCHAR,
+    prim_path VARCHAR,
+    property_name VARCHAR,
+    value_json VARCHAR,
+    sequence_id BIGINT,
+    sim_step BIGINT,
+    sim_time_sec DOUBLE,
+    delta_type VARCHAR,
+    capture_source VARCHAR
+)
+"""
+
+SIMULATION_KEYFRAMES_DDL = """
+CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.simulation_keyframes (
+    keyframe_id VARCHAR,
+    keyframe_time TIMESTAMP(6) WITH TIME ZONE,
+    simulation_id VARCHAR,
+    sim_step BIGINT,
+    entity_id VARCHAR,
+    full_state_json VARCHAR
+)
+"""
+
+
+def ensure_simulation_tables():
+    """Create simulation_sessions, simulation_deltas, simulation_keyframes tables if not exists."""
+    global _simulation_tables_ensured
+    if _simulation_tables_ensured:
+        return
+
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+    init_namespace(ns)
+
+    all_ok = True
+    with trino_cursor(schema=ns) as cursor:
+        for name, ddl in [
+            ("simulation_sessions", SIMULATION_SESSIONS_DDL),
+            ("simulation_deltas", SIMULATION_DELTAS_DDL),
+            ("simulation_keyframes", SIMULATION_KEYFRAMES_DDL),
+        ]:
+            try:
+                cursor.execute(ddl.format(catalog=catalog, namespace=ns))
+                cursor.fetchall()
+                logger.info("Ensured table: %s.%s.%s", catalog, ns, name)
+            except Exception as exc:
+                logger.warning("%s table creation issue: %s", name, exc)
+                all_ok = False
+
+    if all_ok:
+        _simulation_tables_ensured = True
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -124,10 +246,12 @@ async def backup_entities(req: EntityBackupRequest):
 
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
-    backup_ts = _validate_timestamp(req.backup_time)
+    backup_ts = validate_timestamp(req.backup_time)
 
     entities_inserted = 0
     prims_inserted = 0
+    entity_error = ""
+    prim_error = ""
 
     with trino_cursor(schema=ns) as cursor:
         # Batch insert entities (single INSERT with multiple VALUES rows)
@@ -135,12 +259,12 @@ async def backup_entities(req: EntityBackupRequest):
             values_rows = []
             for e in req.entities:
                 row = (
-                    f"('{_esc(e.entity_id)}', '{_esc(e.entity_path)}', '{_esc(e.entity_type)}', "
-                    f"'{_esc(e.source_type)}', '{_esc(e.source_asset)}', "
-                    f"{str(e.is_dynamic).lower()}, '{_esc(e.dynamic_table)}', "
-                    f"{e.child_count}, '{_esc(e.entity_hash)}', '{_esc(e.usd_file_path)}', "
-                    f"'{_esc(req.backup_source)}', '{_esc(e.depends_on)}', "
-                    f"TIMESTAMP '{_esc(backup_ts)}')"
+                    f"('{esc(e.entity_id)}', '{esc(e.entity_path)}', '{esc(e.entity_type)}', "
+                    f"'{esc(e.source_type)}', '{esc(e.source_asset)}', "
+                    f"{str(e.is_dynamic).lower()}, '{esc(e.dynamic_table)}', "
+                    f"{e.child_count}, '{esc(e.entity_hash)}', '{esc(e.usd_file_path)}', "
+                    f"'{esc(req.backup_source)}', '{esc(e.depends_on)}', "
+                    f"TIMESTAMP '{esc(backup_ts)}')"
                 )
                 values_rows.append(row)
 
@@ -157,15 +281,16 @@ async def backup_entities(req: EntityBackupRequest):
                 entities_inserted = len(req.entities)
             except Exception as exc:
                 logger.error("Batch entity insert failed: %s", exc)
+                entity_error = str(exc)
 
         # Batch insert prim snapshots
         if req.prim_snapshots:
             values_rows = []
             for p in req.prim_snapshots:
                 row = (
-                    f"('{_esc(p.entity_path)}', '{_esc(p.relative_path)}', '{_esc(p.prim_type)}', "
-                    f"'{_esc(p.properties)}', '{_esc(p.prim_hash)}', "
-                    f"TIMESTAMP '{_esc(backup_ts)}')"
+                    f"('{esc(p.entity_path)}', '{esc(p.relative_path)}', '{esc(p.prim_type)}', "
+                    f"'{esc(p.properties)}', '{esc(p.prim_hash)}', "
+                    f"TIMESTAMP '{esc(backup_ts)}')"
                 )
                 values_rows.append(row)
 
@@ -180,12 +305,23 @@ async def backup_entities(req: EntityBackupRequest):
                 prims_inserted = len(req.prim_snapshots)
             except Exception as exc:
                 logger.error("Batch prim snapshot insert failed: %s", exc)
+                prim_error = str(exc)
+
+    # Determine status based on insert results
+    errors = []
+    if entities_inserted == 0 and len(req.entities) > 0:
+        errors.append(f"Entity insert failed: {entity_error}")
+    if prims_inserted == 0 and len(req.prim_snapshots) > 0:
+        errors.append(f"Prim insert failed: {prim_error}")
+
+    status = "error" if errors else "ok"
 
     return EntityBackupResponse(
-        status="ok",
+        status=status,
         entities_inserted=entities_inserted,
         prims_inserted=prims_inserted,
         backup_time=backup_ts,
+        error="; ".join(errors) if errors else None,
     )
 
 
@@ -221,7 +357,7 @@ async def get_backup_times():
 @router.get("/entities/list", response_model=EntityListResponse)
 async def list_entities(backup_time: str = Query(..., description="Backup timestamp")):
     """List all entities at a specific backup time."""
-    backup_time = _validate_timestamp(backup_time)
+    backup_time = validate_timestamp(backup_time)
     ensure_entity_tables()
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
@@ -231,7 +367,7 @@ async def list_entities(backup_time: str = Query(..., description="Backup timest
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
             f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on, backup_time "
             f"FROM {catalog}.{ns}.entities "
-            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}' "
+            f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}' "
             f"ORDER BY entity_path"
         )
         cols = [desc[0] for desc in cursor.description]
@@ -260,8 +396,8 @@ async def diff_entities(
     time_b: str = Query(..., description="Second backup timestamp"),
 ):
     """Compare entity hashes between two backup times."""
-    time_a = _validate_timestamp(time_a)
-    time_b = _validate_timestamp(time_b)
+    time_a = validate_timestamp(time_a)
+    time_b = validate_timestamp(time_b)
     ensure_entity_tables()
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
@@ -271,7 +407,7 @@ async def diff_entities(
             cursor.execute(
                 f"SELECT entity_path, entity_hash, entity_type "
                 f"FROM {catalog}.{ns}.entities "
-                f"WHERE backup_time = TIMESTAMP '{_esc(ts)}'"
+                f"WHERE backup_time = TIMESTAMP '{esc(ts)}'"
             )
             return {row[0]: {"hash": row[1], "type": row[2]} for row in cursor.fetchall()}
 
@@ -332,8 +468,8 @@ async def prim_diff(
     time_b: str = Query(...),
 ):
     """Compare sub-prim hashes within an entity between two backup times."""
-    time_a = _validate_timestamp(time_a)
-    time_b = _validate_timestamp(time_b)
+    time_a = validate_timestamp(time_a)
+    time_b = validate_timestamp(time_b)
     ensure_entity_tables()
     entity_path = "/" + entity_path if not entity_path.startswith("/") else entity_path
     catalog = settings.trino_catalog
@@ -344,8 +480,8 @@ async def prim_diff(
             cursor.execute(
                 f"SELECT relative_path, prim_type, prim_hash, properties "
                 f"FROM {catalog}.{ns}.prim_snapshots "
-                f"WHERE entity_path = '{_esc(entity_path)}' "
-                f"AND backup_time = TIMESTAMP '{_esc(ts)}'"
+                f"WHERE entity_path = '{esc(entity_path)}' "
+                f"AND backup_time = TIMESTAMP '{esc(ts)}'"
             )
             return {
                 row[0]: {"type": row[1], "hash": row[2], "properties": row[3]}
@@ -415,7 +551,7 @@ async def restore_all(
 
     Used by the Time Travel Extension for Stage-wide restore in a single API call.
     """
-    backup_time = _validate_timestamp(backup_time)
+    backup_time = validate_timestamp(backup_time)
     ensure_entity_tables()
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
@@ -426,7 +562,7 @@ async def restore_all(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
             f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
-            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}'"
+            f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}'"
         )
         e_cols = [desc[0] for desc in cursor.description]
         e_rows = cursor.fetchall()
@@ -444,7 +580,7 @@ async def restore_all(
         cursor.execute(
             f"SELECT entity_path, relative_path, prim_type, properties, prim_hash "
             f"FROM {catalog}.{ns}.prim_snapshots "
-            f"WHERE backup_time = TIMESTAMP '{_esc(backup_time)}'"
+            f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}'"
         )
         p_cols = [desc[0] for desc in cursor.description]
         p_rows = cursor.fetchall()
@@ -478,7 +614,7 @@ async def restore_entity_prims(
     Allows restoring only selected sub-prims (e.g., one Material from Looks)
     instead of the full entity prim list.
     """
-    backup_time = _validate_timestamp(backup_time)
+    backup_time = validate_timestamp(backup_time)
     ensure_entity_tables()
     entity_path = "/" + entity_path if not entity_path.startswith("/") else entity_path
     catalog = settings.trino_catalog
@@ -488,14 +624,14 @@ async def restore_entity_prims(
     if not paths:
         raise HTTPException(status_code=400, detail="relative_paths must not be empty")
 
-    paths_list = ", ".join(f"'{_esc(p)}'" for p in paths)
+    paths_list = ", ".join(f"'{esc(p)}'" for p in paths)
 
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT relative_path, prim_type, properties, prim_hash "
             f"FROM {catalog}.{ns}.prim_snapshots "
-            f"WHERE entity_path = '{_esc(entity_path)}' "
-            f"AND backup_time = TIMESTAMP '{_esc(backup_time)}' "
+            f"WHERE entity_path = '{esc(entity_path)}' "
+            f"AND backup_time = TIMESTAMP '{esc(backup_time)}' "
             f"AND relative_path IN ({paths_list}) "
             f"ORDER BY relative_path"
         )
@@ -523,7 +659,7 @@ async def restore_entity(
     backup_time: str = Query(...),
 ):
     """Get entity + sub-prim data for restoration."""
-    backup_time = _validate_timestamp(backup_time)
+    backup_time = validate_timestamp(backup_time)
     ensure_entity_tables()
     entity_path = "/" + entity_path if not entity_path.startswith("/") else entity_path
     catalog = settings.trino_catalog
@@ -535,8 +671,8 @@ async def restore_entity(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
             f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
-            f"WHERE entity_path = '{_esc(entity_path)}' "
-            f"AND backup_time = TIMESTAMP '{_esc(backup_time)}'"
+            f"WHERE entity_path = '{esc(entity_path)}' "
+            f"AND backup_time = TIMESTAMP '{esc(backup_time)}'"
         )
         cols = [desc[0] for desc in cursor.description]
         rows = cursor.fetchall()
@@ -554,8 +690,8 @@ async def restore_entity(
         cursor.execute(
             f"SELECT relative_path, prim_type, properties, prim_hash "
             f"FROM {catalog}.{ns}.prim_snapshots "
-            f"WHERE entity_path = '{_esc(entity_path)}' "
-            f"AND backup_time = TIMESTAMP '{_esc(backup_time)}' "
+            f"WHERE entity_path = '{esc(entity_path)}' "
+            f"AND backup_time = TIMESTAMP '{esc(backup_time)}' "
             f"ORDER BY relative_path"
         )
         p_cols = [desc[0] for desc in cursor.description]
@@ -572,81 +708,353 @@ async def restore_entity(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  POST /dynamic/sample-ingest
+#  POST /realtime/flush
 # ═══════════════════════════════════════════════════════════════════════
 
-@router.post("/dynamic/sample-ingest", response_model=SampleIoTResponse)
-async def sample_iot_ingest(req: SampleIoTRequest):
-    """Generate and ingest fake IoT data for a dynamic entity."""
-    from app.core.trino_config import init_dynamic_table
+_REALTIME_MAX_ITEMS = 50000
 
-    # Derive a safe table name from entity path (strict validation)
-    safe_id = _validate_table_id(req.entity_path.strip("/").replace("/", "_"))
-    table_fqn = init_dynamic_table(safe_id)
+
+@router.post("/realtime/flush")
+async def realtime_flush(request: Request, body: dict):
+    """Flush a batch of simulation deltas into Iceberg.
+
+    Requires simulation-specific fields (sequence_id, sim_step, sim_time_sec,
+    delta_type, capture_source) to be present in at least one delta.
+    Batches without simulation fields are ignored.
+    """
+    # Body-size enforcement: reject requests > 50 MB
+    content_length = request.headers.get("content-length")
+    _MAX_BODY_BYTES = 50 * 1024 * 1024  # 50 MB
+    if content_length and int(content_length) > _MAX_BODY_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Request body too large (max {_MAX_BODY_BYTES // (1024*1024)} MB)",
+        )
+
+    simulation_id = body.get("simulation_id", "")
+    batch_id = body.get("batch_id", "")
+    deltas = body.get("deltas", [])
+
+    if not deltas:
+        return {"status": "ok", "inserted": 0, "batch_id": batch_id, "simulation_id": simulation_id}
+
+    if len(deltas) > _REALTIME_MAX_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"deltas exceeds max_items limit ({_REALTIME_MAX_ITEMS})",
+        )
+
+    # Detect if this is a simulation flush (any sim-specific field present)
+    _SIM_FIELDS = {"sequence_id", "sim_step", "sim_time_sec", "delta_type", "capture_source"}
+    is_simulation = any(_SIM_FIELDS & set(d.keys()) for d in deltas)
+
+    if not is_simulation:
+        return {"status": "ok", "inserted": 0, "batch_id": batch_id, "simulation_id": simulation_id,
+                "message": "non-simulation flush ignored"}
+
+    ensure_simulation_tables()
 
     catalog = settings.trino_catalog
     ns = settings.iceberg_namespace
-    table_name = f"dynamic_{safe_id}"
 
-    inserted = 0
-    with trino_cursor(schema=ns) as cursor:
-        for _ in range(req.count):
-            now = datetime.now(timezone.utc)
-            ts = now.strftime("%Y-%m-%d %H:%M:%S.%f")
-            px = round(random.uniform(-5.0, 5.0), 3)
-            py = round(random.uniform(0.0, 2.0), 3)
-            pz = round(random.uniform(-5.0, 5.0), 3)
-            rx = round(random.uniform(-180, 180), 1)
-            ry = round(random.uniform(-180, 180), 1)
-            rz = round(random.uniform(-180, 180), 1)
-            speed = round(random.uniform(0.0, 3.0), 2)
-            oid = safe_id
+    # Validate and build value rows
+    values_rows = []
+    warnings = []
+    for i, d in enumerate(deltas):
+        # Validate value_json
+        vj = d.get("value_json", "")
+        try:
+            json.loads(vj)
+        except (json.JSONDecodeError, TypeError):
+            warnings.append(f"delta[{i}]: invalid value_json, skipped")
+            continue
 
-            sql = (
-                f"INSERT INTO {catalog}.{ns}.{table_name} "
-                f"(object_id, timestamp, pos_x, pos_y, pos_z, rot_x, rot_y, rot_z, speed, space_id, properties) "
-                f"VALUES ('{oid}', TIMESTAMP '{ts}', {px}, {py}, {pz}, "
-                f"{rx}, {ry}, {rz}, {speed}, 'sample', "
-                f"'{{\"source\": \"sample-iot\", \"entity_path\": \"{_esc(req.entity_path)}\"}}')"
-            )
-            try:
-                cursor.execute(sql)
-                cursor.fetchall()
-                inserted += 1
-            except Exception as exc:
-                logger.error("Sample IoT insert failed: %s", exc)
+        capture_time = validate_timestamp(str(d.get("capture_time", "")))
 
-    return SampleIoTResponse(
-        status="ok",
-        entity_path=req.entity_path,
-        records_generated=inserted,
-        table_name=table_name,
+        seq_id = d.get("sequence_id")
+        sim_step = d.get("sim_step")
+        sim_time_sec = d.get("sim_time_sec")
+        delta_type = d.get("delta_type", "")
+        capture_source = d.get("capture_source", "")
+        row = (
+            f"(TIMESTAMP '{esc(capture_time)}', "
+            f"'{esc(d.get('simulation_id', simulation_id))}', "
+            f"'{esc(d.get('entity_id', ''))}', "
+            f"'{esc(d.get('batch_id', batch_id))}', "
+            f"'{esc(d.get('prim_path', ''))}', "
+            f"'{esc(d.get('property_name', ''))}', "
+            f"'{esc(vj)}', "
+            f"{'NULL' if seq_id is None else int(seq_id)}, "
+            f"{'NULL' if sim_step is None else int(sim_step)}, "
+            f"{'NULL' if sim_time_sec is None else float(sim_time_sec)}, "
+            f"'{esc(delta_type)}', "
+            f"'{esc(capture_source)}')"
+        )
+        values_rows.append(row)
+
+    if not values_rows:
+        return {"status": "ok", "inserted": 0, "batch_id": batch_id, "simulation_id": simulation_id, "warnings": warnings}
+
+    sql = (
+        f"INSERT INTO {catalog}.{ns}.simulation_deltas "
+        f"(capture_time, simulation_id, entity_id, batch_id, prim_path, property_name, value_json, "
+        f"sequence_id, sim_step, sim_time_sec, delta_type, capture_source) "
+        f"VALUES {', '.join(values_rows)}"
+    )
+
+    try:
+        with trino_cursor(schema=ns) as cursor:
+            cursor.execute(sql)
+            cursor.fetchall()
+    except Exception as exc:
+        logger.error("Realtime flush INSERT failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Trino INSERT failed: {exc}")
+
+    result = {
+        "status": "ok",
+        "inserted": len(values_rows),
+        "batch_id": batch_id,
+        "simulation_id": simulation_id,
+        "table": "simulation_deltas",
+    }
+    if warnings:
+        result["warnings"] = warnings
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  POST /simulation/sessions
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/simulation/sessions", response_model=SimulationSessionResponse)
+async def create_simulation_session(req: SimulationSessionCreate):
+    """Register a new simulation capture session."""
+    ensure_simulation_tables()
+
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+    now = datetime.now(timezone.utc)
+    start_time = now.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    sql = (
+        f"INSERT INTO {catalog}.{ns}.simulation_sessions "
+        f"(simulation_id, scene_path, start_time, end_time, "
+        f"total_deltas, entity_count, status) "
+        f"VALUES ("
+        f"'{esc(req.simulation_id)}', '{esc(req.scene_path)}', "
+        f"TIMESTAMP '{esc(start_time)}', NULL, "
+        f"0, {int(req.entity_count)}, 'running')"
+    )
+
+    try:
+        with trino_cursor(schema=ns) as cursor:
+            cursor.execute(sql)
+            cursor.fetchall()
+    except Exception as exc:
+        logger.error("simulation_sessions INSERT failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Trino INSERT failed: {exc}")
+
+    return SimulationSessionResponse(
+        simulation_id=req.simulation_id,
+        scene_path=req.scene_path,
+        start_time=start_time,
+        status="running",
     )
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Utility
+#  PATCH /simulation/sessions/{simulation_id}
 # ═══════════════════════════════════════════════════════════════════════
 
-def _esc(val: str) -> str:
-    """Escape single quotes for Trino SQL string literals."""
-    if val is None:
-        return ""
-    return str(val).replace("'", "''")
+@router.patch("/simulation/sessions/{simulation_id}")
+async def update_simulation_session(simulation_id: str, req: SimulationSessionUpdate):
+    """Update simulation session on completion (end_time, totals, status)."""
+    ensure_simulation_tables()
 
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
 
-def _validate_timestamp(ts: str) -> str:
-    """Validate and normalize a timestamp string to prevent SQL injection."""
+    set_clauses = []
+    if req.end_time is not None:
+        end_ts = validate_timestamp(req.end_time)
+        set_clauses.append(f"end_time = TIMESTAMP '{esc(end_ts)}'")
+    if req.total_deltas is not None:
+        set_clauses.append(f"total_deltas = {int(req.total_deltas)}")
+    if req.entity_count is not None:
+        set_clauses.append(f"entity_count = {int(req.entity_count)}")
+    if req.status is not None:
+        set_clauses.append(f"status = '{esc(req.status)}'")
+
+    if not set_clauses:
+        return {"status": "ok", "updated": 0, "simulation_id": simulation_id}
+
+    sql = (
+        f"UPDATE {catalog}.{ns}.simulation_sessions "
+        f"SET {', '.join(set_clauses)} "
+        f"WHERE simulation_id = '{esc(simulation_id)}'"
+    )
+
     try:
-        dt = datetime.fromisoformat(ts.replace(" ", "T").rstrip("Z"))
-        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Invalid timestamp format")
+        with trino_cursor(schema=ns) as cursor:
+            cursor.execute(sql)
+            cursor.fetchall()
+    except Exception as exc:
+        logger.error("simulation_sessions UPDATE failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Trino UPDATE failed: {exc}")
+
+    return {"status": "ok", "simulation_id": simulation_id}
 
 
-def _validate_table_id(val: str) -> str:
-    """Validate a string is safe for use as a SQL table identifier."""
-    safe = val.replace("-", "_").replace(" ", "_").lower()
-    if not re.match(r"^[a-z0-9_]{1,128}$", safe):
-        raise HTTPException(status_code=400, detail="Invalid identifier for table name")
-    return safe
+# ═══════════════════════════════════════════════════════════════════════
+#  GET /simulation/sessions
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/simulation/sessions")
+async def list_simulation_sessions():
+    """List recent simulation sessions ordered by start_time DESC."""
+    ensure_simulation_tables()
+
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+
+    with trino_cursor(schema=ns) as cursor:
+        cursor.execute(
+            f"SELECT simulation_id, scene_path, start_time, end_time, "
+            f"total_deltas, entity_count, status "
+            f"FROM {catalog}.{ns}.simulation_sessions "
+            f"ORDER BY start_time DESC "
+            f"LIMIT 50"
+        )
+        cols = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+
+    sessions = []
+    for row in rows:
+        s = dict(zip(cols, row))
+        for k, v in s.items():
+            if hasattr(v, "isoformat"):
+                s[k] = v.isoformat()
+        sessions.append(s)
+
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  GET /simulation/deltas
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.get("/simulation/deltas")
+async def get_simulation_deltas(
+    simulation_id: str = Query(..., description="Simulation session ID"),
+    start_time: str = Query(None, description="Filter start time (inclusive)"),
+    end_time: str = Query(None, description="Filter end time (inclusive)"),
+    limit: int = Query(default=10000, le=100000),
+    offset: int = Query(default=0, ge=0),
+    format: str = Query(default="json", description="Response format: json or ndjson"),
+):
+    """Fetch simulation deltas for replay. Ordered by sequence_id.
+
+    format=ndjson returns newline-delimited JSON for streaming large datasets.
+    """
+    ensure_simulation_tables()
+
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+
+    where = [f"simulation_id = '{esc(simulation_id)}'"]
+    if start_time:
+        st = validate_timestamp(start_time)
+        where.append(f"capture_time >= TIMESTAMP '{esc(st)}'")
+    if end_time:
+        et = validate_timestamp(end_time)
+        where.append(f"capture_time <= TIMESTAMP '{esc(et)}'")
+
+    where_sql = " AND ".join(where)
+
+    sql = (
+        f"SELECT capture_time, simulation_id, entity_id, batch_id, prim_path, "
+        f"property_name, value_json, sequence_id, sim_step, sim_time_sec, "
+        f"delta_type, capture_source "
+        f"FROM {catalog}.{ns}.simulation_deltas "
+        f"WHERE {where_sql} "
+        f"ORDER BY sequence_id "
+        f"OFFSET {offset} LIMIT {limit}"
+    )
+
+    with trino_cursor(schema=ns) as cursor:
+        cursor.execute(sql)
+        cols = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+
+    def _row_to_dict(row):
+        d = dict(zip(cols, row))
+        for k, v in d.items():
+            if hasattr(v, "isoformat"):
+                d[k] = v.isoformat()
+        return d
+
+    # NDJSON streaming response
+    if format == "ndjson":
+        def _generate_ndjson():
+            for row in rows:
+                yield json.dumps(_row_to_dict(row), default=str) + "\n"
+
+        return StreamingResponse(
+            _generate_ndjson(),
+            media_type="application/x-ndjson",
+        )
+
+    # Standard JSON response
+    deltas = [_row_to_dict(row) for row in rows]
+    return {
+        "simulation_id": simulation_id,
+        "count": len(deltas),
+        "offset": offset,
+        "limit": limit,
+        "deltas": deltas,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  POST /simulation/keyframes
+# ═══════════════════════════════════════════════════════════════════════
+
+@router.post("/simulation/keyframes")
+async def create_simulation_keyframe(req: SimulationKeyframeCreate):
+    """Store a full-state keyframe snapshot for a simulation step."""
+    ensure_simulation_tables()
+
+    catalog = settings.trino_catalog
+    ns = settings.iceberg_namespace
+    now = datetime.now(timezone.utc)
+    keyframe_time = now.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+    # Validate full_state_json
+    try:
+        json.loads(req.full_state_json)
+    except (json.JSONDecodeError, TypeError):
+        raise HTTPException(status_code=400, detail="full_state_json must be valid JSON")
+
+    sql = (
+        f"INSERT INTO {catalog}.{ns}.simulation_keyframes "
+        f"(keyframe_id, keyframe_time, simulation_id, sim_step, entity_id, full_state_json) "
+        f"VALUES ("
+        f"'{esc(req.keyframe_id)}', TIMESTAMP '{esc(keyframe_time)}', "
+        f"'{esc(req.simulation_id)}', {int(req.sim_step)}, "
+        f"'{esc(req.entity_id)}', '{esc(req.full_state_json)}')"
+    )
+
+    try:
+        with trino_cursor(schema=ns) as cursor:
+            cursor.execute(sql)
+            cursor.fetchall()
+    except Exception as exc:
+        logger.error("simulation_keyframes INSERT failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Trino INSERT failed: {exc}")
+
+    return {
+        "status": "ok",
+        "keyframe_id": req.keyframe_id,
+        "simulation_id": req.simulation_id,
+        "keyframe_time": keyframe_time,
+    }

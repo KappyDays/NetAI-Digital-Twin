@@ -35,7 +35,6 @@ class Settings(BaseSettings):
     trino_port: int = 8080
     trino_user: str = "trino"
     trino_catalog: str = "polaris"
-
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

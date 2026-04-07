@@ -1,18 +1,19 @@
 """Lakehouse API — FastAPI middleware for Iceberg Lakehouse / OpenUSD data management.
 
-This service bridges NVIDIA Isaac Sim extensions to the Iceberg Lakehouse,
-providing endpoints for Static/Dynamic object management, USD file uploads,
-and spatio-temporal congestion queries.
+This service bridges NVIDIA Isaac Sim extensions and Nucleus Pipeline
+to the Iceberg Lakehouse, providing endpoints for Entity backup/restore/diff,
+Simulation capture sessions, Raw file backup, and USD file uploads.
 
 Endpoints:
     GET  /health                  — Health check (with dependency status)
     GET  /api/v1/health           — Lightweight health check
-    POST /api/v1/prims            — Insert static Prim records (legacy compat)
-    POST /api/v1/static/prims     — Insert static Prim records (Iceberg)
-    POST /api/v1/dynamic/ingest   — Ingest dynamic object IoT data (Iceberg)
+    POST /api/v1/entities/backup  — Entity + Prim backup
+    GET  /api/v1/entities/diff    — Entity-level diff
+    POST /api/v1/realtime/flush   — Simulation delta batch flush
+    POST /api/v1/simulation/*     — Simulation session management
+    POST /api/v1/raw-backup/*     — Raw file backup
     POST /api/v1/upload-usd       — Upload USD files (S3/MinIO)
     POST /api/v1/query            — Ad-hoc Trino SQL query
-    GET  /api/v1/congestion       — Space congestion aggregation
 
 Run: uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
@@ -49,10 +50,7 @@ async def lifespan(app: FastAPI):
     try:
         _bootstrap_result = bootstrap_schema()
         if _bootstrap_result.get("status") == "ok":
-            logger.info(
-                "Iceberg schema bootstrap OK: %s",
-                _bootstrap_result.get("static_table"),
-            )
+            logger.info("Iceberg schema bootstrap OK")
             # Bootstrap entity backup tables
             try:
                 entity_result = ensure_entity_tables()
@@ -75,9 +73,9 @@ app = FastAPI(
     title="Lakehouse API",
     description=(
         "REST API middleware that bridges NVIDIA Isaac Sim (Omniverse) "
-        "to an Apache Iceberg Lakehouse (Polaris + MinIO + Trino). "
-        "Manages Static/Dynamic USD object data and provides "
-        "spatiotemporal congestion visualization endpoints."
+        "and Nucleus Pipeline to an Apache Iceberg Lakehouse "
+        "(Polaris + MinIO + Trino). Manages Entity backup/restore/diff, "
+        "Simulation capture sessions, and Raw file backup."
     ),
     version="1.0.0",
     docs_url="/docs",

@@ -4,13 +4,13 @@ Trino–Iceberg connection configuration and schema bootstrap.
 This module centralizes all Trino connection logic for the Lakehouse API:
   1. Connection factory with retry/health-check
   2. Iceberg catalog & namespace validation
-  3. Schema initialization for Static/Dynamic tables
+  3. Schema namespace initialization
 
 Architecture note:
   - Trino connects to the Iceberg REST catalog (Apache Polaris) which
     manages metadata.  MinIO provides the S3-compatible object store.
-  - The Trino catalog name (`iceberg`) corresponds to the
-    `iceberg.properties` file mounted at /etc/trino/catalog/.
+  - The Trino catalog name (`polaris`) corresponds to the
+    `polaris.properties` file mounted at /etc/trino/catalog/.
 """
 
 from __future__ import annotations
@@ -174,40 +174,6 @@ def check_iceberg_catalog() -> dict:
 #  Schema Bootstrap (Namespace + Tables)
 # ═══════════════════════════════════════════════════════════════════════
 
-# SQL definitions for the Static prim table (static_prims)
-# Partitioned by space_id for efficient per-space queries and overwrites.
-STATIC_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.{table} (
-    prim_path   VARCHAR NOT NULL,
-    type        VARCHAR NOT NULL,
-    properties  VARCHAR,
-    space_id    VARCHAR,
-    ingested_at TIMESTAMP(6)
-)
-WITH (
-    format = 'PARQUET',
-    partitioning = ARRAY['space_id']
-)
-"""
-
-# SQL definition template for per-object Dynamic tables
-DYNAMIC_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.{table} (
-    object_id   VARCHAR NOT NULL,
-    timestamp   TIMESTAMP(6) NOT NULL,
-    pos_x       DOUBLE,
-    pos_y       DOUBLE,
-    pos_z       DOUBLE,
-    rot_x       DOUBLE,
-    rot_y       DOUBLE,
-    rot_z       DOUBLE,
-    speed       DOUBLE,
-    space_id    VARCHAR,
-    properties  VARCHAR
-)
-WITH (format = 'PARQUET')
-"""
-
 
 def init_namespace(namespace: str | None = None) -> str:
     """
@@ -226,69 +192,9 @@ def init_namespace(namespace: str | None = None) -> str:
     return ns
 
 
-def init_static_table(
-    namespace: str | None = None,
-    table_name: str | None = None,
-) -> str:
-    """
-    Bootstrap the static prim table in the Iceberg catalog via Trino.
-
-    Returns the fully-qualified table name.
-    """
-    ns = namespace or settings.iceberg_namespace
-    tbl = table_name or settings.iceberg_table_name
-    catalog = settings.trino_catalog
-    init_namespace(ns)
-
-    ddl = STATIC_TABLE_DDL.format(catalog=catalog, namespace=ns, table=tbl)
-    with trino_cursor(schema=ns) as cursor:
-        cursor.execute(ddl)
-        cursor.fetchall()
-        logger.info("Ensured static table: %s.%s.%s", catalog, ns, tbl)
-
-    return f"{catalog}.{ns}.{tbl}"
-
-
-def init_dynamic_table(
-    object_id: str,
-    namespace: str | None = None,
-) -> str:
-    """
-    Bootstrap a per-object dynamic table in the Iceberg catalog via Trino.
-
-    Table naming convention: dynamic_<sanitised_object_id>
-
-    Returns the fully-qualified table name.
-    """
-    ns = namespace or settings.iceberg_namespace
-    catalog = settings.trino_catalog
-    safe_id = object_id.replace("-", "_").replace(" ", "_").lower()
-    tbl = f"dynamic_{safe_id}"
-    init_namespace(ns)
-
-    ddl = DYNAMIC_TABLE_DDL.format(catalog=catalog, namespace=ns, table=tbl)
-    with trino_cursor(schema=ns) as cursor:
-        cursor.execute(ddl)
-        cursor.fetchall()
-        logger.info("Ensured dynamic table: %s.%s.%s", catalog, ns, tbl)
-
-    return f"{catalog}.{ns}.{tbl}"
-
-
-def list_dynamic_tables(namespace: str | None = None) -> list[str]:
-    """Return all dynamic_* table names in the given namespace."""
-    ns = namespace or settings.iceberg_namespace
-    catalog = settings.trino_catalog
-    with trino_cursor(schema=ns) as cursor:
-        cursor.execute(
-            f"SHOW TABLES FROM {catalog}.{ns} LIKE 'dynamic_%'"
-        )
-        return [row[0] for row in cursor.fetchall()]
-
-
 def bootstrap_schema() -> dict:
     """
-    Full schema bootstrap: wait for Trino, create namespace and static table.
+    Full schema bootstrap: wait for Trino and ensure namespace exists.
 
     Called once at API startup. Returns status dict.
     """
@@ -296,11 +202,10 @@ def bootstrap_schema() -> dict:
         return {"status": "error", "message": "Trino not available"}
 
     try:
-        fq_table = init_static_table()
+        init_namespace()
         catalog_info = check_iceberg_catalog()
         return {
             "status": "ok",
-            "static_table": fq_table,
             "catalog_info": catalog_info,
         }
     except Exception as exc:

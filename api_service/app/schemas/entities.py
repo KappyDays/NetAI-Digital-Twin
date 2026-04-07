@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -44,6 +43,7 @@ class EntityBackupResponse(BaseModel):
     entities_inserted: int = 0
     prims_inserted: int = 0
     backup_time: str = ""
+    error: Optional[str] = None
 
 
 # ── List / Query ──────────────────────────────────────────────────────
@@ -110,15 +110,42 @@ class EntityRestoreResponse(BaseModel):
     prim_snapshots: List[dict] = []
 
 
-# ── Sample IoT ────────────────────────────────────────────────────────
+# ── Simulation Session / Delta / Keyframe ─────────────────────────────
 
-class SampleIoTRequest(BaseModel):
-    entity_path: str = "/World/Robots/Jetbot"
-    count: int = Field(default=10, ge=1, le=1000)
+class SimulationSessionCreate(BaseModel):
+    simulation_id: str
+    scene_path: str
+    entity_count: int = 0
 
 
-class SampleIoTResponse(BaseModel):
-    status: str = "ok"
-    entity_path: str
-    records_generated: int = 0
-    table_name: str = ""
+class SimulationSessionUpdate(BaseModel):
+    end_time: Optional[str] = None
+    total_deltas: Optional[int] = None
+    entity_count: Optional[int] = None
+    status: Optional[str] = None
+
+
+class SimulationSessionResponse(BaseModel):
+    simulation_id: str
+    scene_path: str = ""
+    start_time: str = ""
+    end_time: Optional[str] = None
+    total_deltas: int = 0
+    entity_count: int = 0
+    status: str = "running"
+
+
+class SimulationDeltaQuery(BaseModel):
+    simulation_id: str
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    limit: int = Field(default=10000, le=100000)
+    offset: int = Field(default=0, ge=0)
+
+
+class SimulationKeyframeCreate(BaseModel):
+    keyframe_id: str
+    simulation_id: str
+    sim_step: int = 0
+    entity_id: str = ""
+    full_state_json: str = "{}"
