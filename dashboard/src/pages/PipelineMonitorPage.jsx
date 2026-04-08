@@ -7,6 +7,7 @@ import { executeQuery } from "../api.js";
  * Task 1: raw_backup_files
  * Task 2: entities, prim_snapshots
  * Task 3: simulation_sessions, simulation_deltas, simulation_keyframes
+ * Task 4: hum_temp_sensor1
  *
  * NOTE: Trino catalog name is "polaris" (trino/catalog/polaris.properties). SQL must use polaris.netai.*
  */
@@ -55,12 +56,21 @@ const TABLES = {
       deleteSql: "DELETE FROM polaris.netai.simulation_keyframes",
     },
   ],
+  task4: [
+    {
+      id: "hum_temp_sensor1",
+      label: "hum_temp_sensor1",
+      sql: "SELECT * FROM polaris.netai.hum_temp_sensor1 ORDER BY capture_time DESC LIMIT 50",
+      deleteSql: "DELETE FROM polaris.netai.hum_temp_sensor1",
+    },
+  ],
 };
 
 const TASK_META = [
   { key: "task1", title: "Task 1 — Raw Backup", color: "#7ecfff" },
   { key: "task2", title: "Task 2 — Entity Backup", color: "#b5ead7" },
   { key: "task3", title: "Task 3 — Simulation (M&S)", color: "#ffd6a5" },
+  { key: "task4", title: "Task 4 — Dynamic IoT", color: "#c9b1ff" },
 ];
 
 /* ── TableSection ─────────────────────────────────────── */
@@ -338,7 +348,7 @@ export default function PipelineMonitorPage() {
     <div style={{ padding: "20px" }}>
       <h2 style={{ color: "#e0e0e0", marginBottom: "4px" }}>Pipeline Monitor</h2>
       <p style={{ color: "#888", fontSize: "13px", marginBottom: "24px" }}>
-        All 5 Iceberg tables — click <strong style={{ color: "#4a6fa5" }}>Load</strong> to
+        {`All ${Object.values(TABLES).flat().length} Iceberg tables`} — click <strong style={{ color: "#4a6fa5" }}>Load</strong> to
         query the latest rows,{" "}
         <strong style={{ color: "#ff6b6b" }}>Delete</strong> to truncate the table.
       </p>

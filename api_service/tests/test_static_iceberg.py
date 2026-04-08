@@ -29,7 +29,6 @@ from app.services.iceberg_service import (
     PA_STATIC_SCHEMA,
     STATIC_PARTITION_SPEC,
     STATIC_PRIM_SCHEMA,
-    _dynamic_table_name,
     extract_space_id,
     validate_prim_path,
     validate_properties_json,
@@ -380,22 +379,6 @@ class TestOverwriteSpacePrims:
 # ═══════════════════════════════════════════════════════════════════════
 #  7. Dynamic Table Name Generation Tests
 # ═══════════════════════════════════════════════════════════════════════
-
-
-class TestDynamicTableName:
-    """Test dynamic table name generation."""
-
-    def test_simple_id(self):
-        assert _dynamic_table_name("robot01") == "dynamic_robot01"
-
-    def test_hyphenated_id(self):
-        assert _dynamic_table_name("robot-01") == "dynamic_robot_01"
-
-    def test_space_in_id(self):
-        assert _dynamic_table_name("robot 01") == "dynamic_robot_01"
-
-    def test_uppercase_lowered(self):
-        assert _dynamic_table_name("Robot_A") == "dynamic_robot_a"
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -15,8 +15,6 @@ class EntityRecord(BaseModel):
     entity_type: str
     source_type: str = ""
     source_asset: str = ""
-    is_dynamic: bool = False
-    dynamic_table: str = ""
     child_count: int = 0
     entity_hash: str = ""
     usd_file_path: str = ""

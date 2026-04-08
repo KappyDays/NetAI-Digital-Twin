@@ -70,3 +70,24 @@ export const getRawBackupDiff = (timeA, timeB) => {
   return request(`/raw-backup/diff?${qs}`);
 };
 
+// ── Dynamic IoT (Task 4) ────────────────────────────────────────
+
+/** GET /api/v1/dynamic/tables */
+export const getDynamicTables = () => request("/dynamic/tables");
+
+/** GET /api/v1/dynamic/query/{table}?start_time=...&end_time=...&limit=... */
+export const getDynamicQuery = (tableName, startTime, endTime, limit = 100) => {
+  const qs = new URLSearchParams();
+  if (startTime) qs.set("start_time", startTime);
+  if (endTime) qs.set("end_time", endTime);
+  if (limit) qs.set("limit", String(limit));
+  const query = qs.toString();
+  return request(`/dynamic/query/${encodeURIComponent(tableName)}${query ? `?${query}` : ""}`);
+};
+
+/** POST /api/v1/dynamic/seed-demo */
+export const seedDynamicDemo = (tableName = "hum_temp_sensor1") =>
+  request(`/dynamic/seed-demo?table_name=${encodeURIComponent(tableName)}`, {
+    method: "POST",
+  });
+

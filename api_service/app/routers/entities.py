@@ -64,8 +64,6 @@ CREATE TABLE IF NOT EXISTS {catalog}.{namespace}.entities (
     entity_type VARCHAR,
     source_type VARCHAR,
     source_asset VARCHAR,
-    is_dynamic BOOLEAN,
-    dynamic_table VARCHAR,
     child_count INTEGER,
     entity_hash VARCHAR,
     usd_file_path VARCHAR,
@@ -103,7 +101,7 @@ def _get_table_columns(cursor, catalog: str, ns: str, table: str) -> list[str]:
 # Expected columns per table — used for schema migration checks
 _ENTITIES_EXPECTED_COLS = [
     "entity_id", "entity_path", "entity_type", "source_type", "source_asset",
-    "is_dynamic", "dynamic_table", "child_count", "entity_hash", "usd_file_path",
+    "child_count", "entity_hash", "usd_file_path",
     "backup_source", "depends_on", "backup_time",
 ]
 
@@ -261,7 +259,6 @@ async def backup_entities(req: EntityBackupRequest):
                 row = (
                     f"('{esc(e.entity_id)}', '{esc(e.entity_path)}', '{esc(e.entity_type)}', "
                     f"'{esc(e.source_type)}', '{esc(e.source_asset)}', "
-                    f"{str(e.is_dynamic).lower()}, '{esc(e.dynamic_table)}', "
                     f"{e.child_count}, '{esc(e.entity_hash)}', '{esc(e.usd_file_path)}', "
                     f"'{esc(req.backup_source)}', '{esc(e.depends_on)}', "
                     f"TIMESTAMP '{esc(backup_ts)}')"
@@ -271,7 +268,7 @@ async def backup_entities(req: EntityBackupRequest):
             sql = (
                 f"INSERT INTO {catalog}.{ns}.entities "
                 f"(entity_id, entity_path, entity_type, source_type, source_asset, "
-                f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, "
+                f"child_count, entity_hash, usd_file_path, "
                 f"backup_source, depends_on, backup_time) "
                 f"VALUES {', '.join(values_rows)}"
             )
@@ -365,7 +362,7 @@ async def list_entities(backup_time: str = Query(..., description="Backup timest
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on, backup_time "
+            f"child_count, entity_hash, usd_file_path, depends_on, backup_time "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}' "
             f"ORDER BY entity_path"
@@ -560,7 +557,7 @@ async def restore_all(
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
+            f"child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE backup_time = TIMESTAMP '{esc(backup_time)}'"
         )
@@ -669,7 +666,7 @@ async def restore_entity(
     with trino_cursor(schema=ns) as cursor:
         cursor.execute(
             f"SELECT entity_id, entity_path, entity_type, source_type, source_asset, "
-            f"is_dynamic, dynamic_table, child_count, entity_hash, usd_file_path, depends_on "
+            f"child_count, entity_hash, usd_file_path, depends_on "
             f"FROM {catalog}.{ns}.entities "
             f"WHERE entity_path = '{esc(entity_path)}' "
             f"AND backup_time = TIMESTAMP '{esc(backup_time)}'"

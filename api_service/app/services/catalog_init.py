@@ -260,21 +260,6 @@ DYNAMIC_OBJECT_TABLE_TEMPLATE = TableDef(
 )
 
 
-def make_dynamic_table_def(object_id: str) -> TableDef:
-    """
-    Create a concrete TableDef for a specific dynamic object.
-
-    Sanitizes object_id for use as a table name suffix.
-    """
-    safe_id = object_id.replace("-", "_").replace(" ", "_").lower()
-    return TableDef(
-        namespace=DYNAMIC_OBJECT_TABLE_TEMPLATE.namespace,
-        table_name=f"dynamic_{safe_id}",
-        description=f"Dynamic object table for '{object_id}'",
-        columns=DYNAMIC_OBJECT_TABLE_TEMPLATE.columns,
-        partition_columns=DYNAMIC_OBJECT_TABLE_TEMPLATE.partition_columns,
-    )
-
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Schema Verification

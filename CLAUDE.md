@@ -34,18 +34,21 @@ chmod +x scripts/*.sh start.sh
 
 ### 2. API Service (FastAPI Middleware)
 
-`api_service/` — FastAPI. Main routers: `app/routers/entities.py` (Entity backup/restore/diff + Simulation API) and `app/routers/raw_backup.py` (Raw file backup). Additional: `app/api/v1/query.py` (ad-hoc SQL), `app/api/v1/upload.py` (USD upload/download).
+`api_service/` — FastAPI. Main routers: `app/routers/entities.py` (Entity backup/restore/diff + Simulation API), `app/routers/raw_backup.py` (Raw file backup), and `app/routers/dynamic_prims.py` (DynamicPrim IoT streaming). Additional: `app/api/v1/query.py` (ad-hoc SQL), `app/api/v1/upload.py` (USD upload/download).
 
-**Iceberg Tables (6 active):**
+**Iceberg Tables (7+ active):**
 
 | Table | Task | Purpose |
 |-------|------|---------|
+| `raw_backup_files` | Task 1 | Nucleus folder file metadata |
 | `entities` | Task 2 | Entity metadata + backup snapshots |
 | `prim_snapshots` | Task 2 | Prim hierarchy snapshots |
-| `raw_backup_files` | Task 1 | Nucleus folder file metadata |
 | `simulation_sessions` | Task 3 | M&S capture session metadata |
 | `simulation_deltas` | Task 3 | M&S property delta records |
 | `simulation_keyframes` | Task 3 | M&S keyframe full state snapshots |
+| `hum_temp_sensor1` (+ per-sensor) | Task 4 | DynamicPrim IoT streaming data (1 Prim = 1 Table) |
+
+**Task 4 (DynamicPrim IoT):** 센서별 독립 Iceberg 테이블로 (준)실시간 IoT 스트리밍 데이터 저장. Isaac Sim Prim(`/World/Dynamic/*`)과 1:1 매핑. 라우터: `app/routers/dynamic_prims.py`. entities 테이블과 독립 운영.
 
 ### 3. Nucleus Pipeline (CLI)
 
@@ -72,18 +75,15 @@ chmod +x scripts/*.sh start.sh
 
 ### 5. Web Dashboard
 
-`dashboard/` — React SPA (Vite) with Entity Diff viewer, Raw Backup explorer, Pipeline Monitor (5 Iceberg tables live view), and Trino SQL interface. Served via nginx reverse proxy on port 3000.
+`dashboard/` — React SPA (Vite) with Entity Diff viewer, Raw Backup explorer, Pipeline Monitor (Task 1~4 Iceberg tables live view), and Trino SQL interface. Served via nginx reverse proxy on port 3000.
 
 ## Testing
 
 ```bash
-cd api_service && python -m pytest tests/ -v \
-  --ignore=tests/test_dynamic_object_service.py \
-  --ignore=tests/test_dynamic_objects.py \
-  --ignore=tests/test_dynamic_query_service.py
+cd api_service && python -m pytest tests/ -v
 ```
 
-> Note: Legacy tests such as `test_dynamic_*` and `test_static_query_service.py` fail because they reference deleted modules (unused Dynamic/Static services). Entity-related tests pass normally.
+> Note: `test_static_iceberg.py::TestStaticTableInfo::test_returns_schema_fields` is a known pre-existing failure (`settings.iceberg_table_name` missing). All other 200 tests pass. Legacy test files (test_dynamic_*, test_spaces, test_prims, etc.) have been removed.
 
 ## Entity Model
 
@@ -146,4 +146,5 @@ Extraction uses `ListInfoKeys()` on both `Sdf.PrimSpec` and `Sdf.PropertySpec` l
 4. **Runner WebSocket contract**: `runner_server.py` protocol change → sync `PipelineGuidePage.jsx`
 5. **Inactive Extensions (do not modify)**: `physics.simulation`, `dynamic.tracker`, `space.heatmap`, `object.detector`, `stagegraph.viewer`, `lakehouse.proto` — legacy
 6. **Iceberg 테이블 변경**: `entities.py` DDL 변경 → `QueryPanel.jsx` 프리셋 + `PipelineMonitorPage.jsx` 테이블 목록 동기화 (`lakehouse-backend` + `frontend`)
+7. **DynamicPrim API contract**: `dynamic_prims.py` 변경 → `QueryPanel.jsx` Task 4 프리셋 + `PipelineMonitorPage.jsx` Task 4 테이블 목록 동기화
 

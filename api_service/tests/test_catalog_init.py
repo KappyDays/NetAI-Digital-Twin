@@ -37,7 +37,6 @@ from app.services.catalog_init import (
     SchemaCheckResult,
     TableDef,
     describe_table,
-    make_dynamic_table_def,
 )
 
 
@@ -360,36 +359,6 @@ class TestDynamicTableTemplate:
         assert DYNAMIC_OBJECT_TABLE_TEMPLATE.partition_columns == ()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-#  9. make_dynamic_table_def Factory
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestMakeDynamicTableDef:
-    """Test dynamic table definition factory."""
-
-    def test_simple_id(self):
-        tbl = make_dynamic_table_def("worker01")
-        assert tbl.table_name == "dynamic_worker01"
-        assert tbl.namespace == "dynamic_db"
-
-    def test_hyphenated_id(self):
-        tbl = make_dynamic_table_def("robot-alpha")
-        assert tbl.table_name == "dynamic_robot_alpha"
-
-    def test_uppercase_lowered(self):
-        tbl = make_dynamic_table_def("AGV_Beta")
-        assert tbl.table_name == "dynamic_agv_beta"
-
-    def test_columns_match_template(self):
-        tbl = make_dynamic_table_def("test")
-        assert tbl.columns == DYNAMIC_OBJECT_TABLE_TEMPLATE.columns
-
-    def test_generates_valid_ddl(self):
-        tbl = make_dynamic_table_def("sensor_01")
-        ddl = tbl.to_trino_ddl()
-        assert "dynamic_sensor_01" in ddl
-        assert "dynamic_db" in ddl
 
 
 # ═══════════════════════════════════════════════════════════════════════

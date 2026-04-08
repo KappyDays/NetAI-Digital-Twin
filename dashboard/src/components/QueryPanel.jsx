@@ -45,6 +45,10 @@ const PRESET_GROUPS = [
         label: "Describe simulation_keyframes",
         sql: "DESCRIBE polaris.netai.simulation_keyframes",
       },
+      {
+        label: "Describe hum_temp_sensor1",
+        sql: "DESCRIBE polaris.netai.hum_temp_sensor1",
+      },
     ],
   },
   {
@@ -52,15 +56,15 @@ const PRESET_GROUPS = [
     presets: [
       {
         label: "Entities (latest 50)",
-        sql: "SELECT entity_id, entity_path, entity_hash, backup_time\nFROM polaris.netai.entities\nORDER BY backup_time DESC\nLIMIT 50",
+        sql: "SELECT entity_id, entity_path, entity_type, source_type, source_asset,\n       child_count, entity_hash, usd_file_path, backup_source, depends_on, backup_time\nFROM polaris.netai.entities\nORDER BY backup_time DESC\nLIMIT 50",
       },
       {
         label: "Prim Snapshots (latest 50)",
-        sql: "SELECT entity_path, relative_path, prim_type, prim_hash, backup_time\nFROM polaris.netai.prim_snapshots\nORDER BY backup_time DESC\nLIMIT 50",
+        sql: "SELECT entity_path, relative_path, prim_type, properties, prim_hash, backup_time\nFROM polaris.netai.prim_snapshots\nORDER BY backup_time DESC\nLIMIT 50",
       },
       {
         label: "Raw Backup Files (latest 50)",
-        sql: "SELECT file_path, file_name, file_size, status, backup_time\nFROM polaris.netai.raw_backup_files\nORDER BY backup_time DESC\nLIMIT 50",
+        sql: "SELECT backup_time, folder_path, file_path, file_name, file_extension,\n       file_size, modified_time, s3_key, status, backup_source\nFROM polaris.netai.raw_backup_files\nORDER BY backup_time DESC\nLIMIT 50",
       },
       {
         label: "Simulation Sessions",
@@ -68,11 +72,15 @@ const PRESET_GROUPS = [
       },
       {
         label: "Simulation Deltas (latest 50)",
-        sql: "SELECT capture_time, simulation_id, prim_path, property_name, delta_type, capture_source\nFROM polaris.netai.simulation_deltas\nORDER BY capture_time DESC\nLIMIT 50",
+        sql: "SELECT capture_time, simulation_id, entity_id, batch_id, prim_path,\n       property_name, value_json, sequence_id, sim_step, sim_time_sec,\n       delta_type, capture_source\nFROM polaris.netai.simulation_deltas\nORDER BY capture_time DESC\nLIMIT 50",
       },
       {
         label: "Simulation Keyframes (latest 50)",
-        sql: "SELECT keyframe_id, simulation_id, sim_step, entity_id, keyframe_time\nFROM polaris.netai.simulation_keyframes\nORDER BY keyframe_time DESC\nLIMIT 50",
+        sql: "SELECT keyframe_id, keyframe_time, simulation_id, sim_step, entity_id, full_state_json\nFROM polaris.netai.simulation_keyframes\nORDER BY keyframe_time DESC\nLIMIT 50",
+      },
+      {
+        label: "IoT Sensor Data (latest 50)",
+        sql: "SELECT capture_time, temperature, humidity, device_id, quality_flag,\n       source_ip, unit_temp, unit_humid\nFROM polaris.netai.hum_temp_sensor1\nORDER BY capture_time DESC\nLIMIT 50",
       },
     ],
   },
@@ -98,6 +106,10 @@ const PRESET_GROUPS = [
       {
         label: "File Extension Distribution",
         sql: "SELECT file_extension,\n       COUNT(*) AS file_count,\n       SUM(file_size) AS total_bytes\nFROM polaris.netai.raw_backup_files\nGROUP BY file_extension\nORDER BY total_bytes DESC",
+      },
+      {
+        label: "IoT Hourly Averages",
+        sql: "SELECT date_trunc('hour', capture_time) AS hour,\n       AVG(temperature) AS avg_temp,\n       AVG(humidity) AS avg_humid,\n       COUNT(*) AS readings\nFROM polaris.netai.hum_temp_sensor1\nGROUP BY date_trunc('hour', capture_time)\nORDER BY hour DESC",
       },
     ],
   },
@@ -224,6 +236,10 @@ const PRESET_GROUPS = [
       {
         label: "Clear simulation_keyframes",
         sql: "DELETE FROM polaris.netai.simulation_keyframes",
+      },
+      {
+        label: "Clear hum_temp_sensor1",
+        sql: "DELETE FROM polaris.netai.hum_temp_sensor1",
       },
     ],
   },

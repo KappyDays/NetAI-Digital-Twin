@@ -9,6 +9,7 @@ FastAPI middleware. Connects Nucleus Pipeline and Isaac Sim Extension to the Ice
 ```
 routers/entities.py  — Entity backup/restore/diff + Simulation sessions/deltas/keyframes/flush
 routers/raw_backup.py — Raw file backup endpoints (Task 1)
+routers/dynamic_prims.py — IoT sensor streaming endpoints (Task 4)
 api/v1/query.py      — Ad-hoc Trino SQL (read-only restricted)
 api/v1/upload.py     — MinIO file upload/download
 core/sql_utils.py    — SQL escape common utilities (esc, validate_timestamp, validate_table_id)
@@ -44,7 +45,7 @@ cd api_service
 - `test_dynamic_*`, `test_static_query_service.py`, etc. reference deleted modules → legacy (excluded from execution)
 - Entity/Raw Backup router tests are not yet written (need to be added)
 
-## Active Iceberg Tables (6)
+## Active Iceberg Tables (6 fixed + N dynamic)
 
 | Table | Task | Bootstrap |
 |-------|------|-----------|
@@ -54,6 +55,7 @@ cd api_service
 | `simulation_sessions` | Task 3 | `ensure_simulation_tables()` |
 | `simulation_deltas` | Task 3 | `ensure_simulation_tables()` |
 | `simulation_keyframes` | Task 3 | `ensure_simulation_tables()` |
+| `<sensor_name>` (N) | Task 4 | `POST /dynamic/register` or `POST /dynamic/seed-demo` on demand |
 
 ## Active API Endpoints
 
@@ -81,6 +83,14 @@ cd api_service
 - `GET /raw-backup/list` — 특정 시간 파일 목록
 - `GET /raw-backup/times` — 백업 시간 목록
 - `GET /raw-backup/diff` — 파일 비교
+
+### Dynamic IoT (routers/dynamic_prims.py)
+- `POST /dynamic/register` — 센서 테이블 생성 + 레지스트리 등록
+- `POST /dynamic/ingest` — IoT 레코드 batch insert (500행 단위)
+- `GET /dynamic/query/{table}` — 시계열 조회 (start_time/end_time/limit)
+- `GET /dynamic/tables` — 등록된 동적 테이블 목록 (Trino information_schema 기반)
+- `DELETE /dynamic/{table}` — 테이블 DROP + 레지스트리 삭제
+- `POST /dynamic/seed-demo` — 24 h 데모 데이터 시딩 (~1440 rows, 1분 간격)
 
 ### Utility (api/v1/)
 - `GET /health` — lightweight health check

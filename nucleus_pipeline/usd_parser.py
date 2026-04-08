@@ -154,8 +154,6 @@ def parse_usd(file_path: str) -> tuple[list[dict], list[dict], dict[str, str]]:
             "entity_type": info["type"],
             "source_type": info["source_type"],
             "source_asset": info.get("source_asset", ""),
-            "is_dynamic": False,
-            "dynamic_table": "",
             "child_count": len(entity_overrides),
             "entity_hash": combined_hash,
             "usd_file_path": "",
